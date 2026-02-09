@@ -22,6 +22,16 @@
     <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-preview.260205.1" />
     <!-- OpenAI -->
     <PackageVersion Include="OpenAI" Version="2.8.0" />
+    <!-- Logging -->
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
+    <!-- OpenTelemetry -->
+    <PackageVersion Include="OpenTelemetry" Version="1.11.2" />
+    <PackageVersion Include="OpenTelemetry.Exporter.Console" Version="1.11.2" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.11.2" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.11.2" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.11.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.11.0" />
     <!-- Test -->
     <PackageVersion Include="coverlet.collector" Version="6.0.4" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />

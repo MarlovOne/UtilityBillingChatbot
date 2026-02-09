@@ -3,63 +3,36 @@
 // This sample demonstrates Stage 1 of the Utility Billing Customer Support Chatbot:
 // A Classifier Agent that categorizes customer questions into appropriate routing categories.
 
-using System.Text.Json;
-using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using UtilityBillingChatbot.Extensions;
+using UtilityBillingChatbot.Hosting;
 using UtilityBillingChatbot.Models;
-using UtilityBillingChatbot.MultiAgent;
+using UtilityBillingChatbot.Telemetry;
 
-// Load configuration from appsettings.json and environment variables
-var configuration = new ConfigurationBuilder()
-    .SetBasePath(AppContext.BaseDirectory)
-    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddEnvironmentVariables()
-    .Build();
+// Build the chatbot host with all services configured
+var builder = new ChatbotHostBuilder();
+using var host = await builder.BuildAsync();
 
-// Load LLM options
-var llmOptions = configuration.GetSection("LLM").Get<LlmOptions>()
-    ?? throw new InvalidOperationException("LLM configuration not found in appsettings.json");
-
-// Fallback: check common HuggingFace environment variable names if ApiKey not set
-if (llmOptions.HuggingFace is not null && string.IsNullOrEmpty(llmOptions.HuggingFace.ApiKey))
-{
-    llmOptions.HuggingFace.ApiKey =
-        Environment.GetEnvironmentVariable("HF_TOKEN") ??
-        Environment.GetEnvironmentVariable("HUGGINGFACE_API_KEY") ??
-        Environment.GetEnvironmentVariable("HUGGINGFACE_TOKEN");
-}
-
-// Load verified questions from JSON file
-var verifiedQuestionsPath = configuration["VerifiedQuestionsPath"] ?? "Data/verified-questions.json";
-if (!Path.IsPathRooted(verifiedQuestionsPath))
-{
-    verifiedQuestionsPath = Path.Combine(AppContext.BaseDirectory, verifiedQuestionsPath);
-}
-
-var verifiedQuestionsJson = await File.ReadAllTextAsync(verifiedQuestionsPath);
-var verifiedQuestions = JsonSerializer.Deserialize<List<VerifiedQuestion>>(verifiedQuestionsJson, JsonSerializerOptions.Web)
-    ?? throw new InvalidOperationException("Failed to load verified questions");
-
-Console.WriteLine($"Loaded {verifiedQuestions.Count} verified question types.");
+Console.WriteLine($"Loaded {builder.VerifiedQuestions.Count} verified question types.");
+Console.WriteLine($"Using {builder.LlmOptions.Provider}: {GetModelName(builder.LlmOptions)}");
 Console.WriteLine();
 
-// Configure services using DI
-var services = new ServiceCollection();
-
-// Register the chat client
-var chatClient = CreateChatClient(llmOptions);
-services.AddSingleton<IChatClient>(chatClient);
-
-// Register multi-agent services (agent definitions and registry)
-services.AddMultiAgentServices(verifiedQuestions);
-
-// Build service provider and initialize agents
-var serviceProvider = services.BuildServiceProvider();
-var agentRegistry = serviceProvider.BuildAgentRegistry();
+// Get logger for Program
+var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Program");
+logger.LogInformation("Starting chatbot with {AgentCount} registered agents", host.AgentRegistry.GetAll().Count);
 
 // Get the classifier agent from the registry
-var classifierAgent = agentRegistry.GetAgent("classifier");
+// Use GetBaseAgent for structured output support (RunAsync<T>)
+var classifierAgent = host.AgentRegistry.GetBaseAgent("classifier");
+
+static string GetModelName(LlmOptions options) => options.Provider switch
+{
+    "AzureOpenAI" => options.AzureOpenAI?.DeploymentName ?? "unknown",
+    "OpenAI" => options.OpenAI?.Model ?? "unknown",
+    "HuggingFace" => options.HuggingFace?.Model ?? "unknown",
+    _ => "unknown"
+};
 
 Console.WriteLine("=== Utility Billing Customer Support Classifier ===");
 Console.WriteLine("Enter your question (or 'quit' to exit):");
@@ -84,9 +57,28 @@ while (true)
 
     try
     {
+        logger.LogInformation("User input received: {Length} chars", input.Length);
+
         // Use structured output to get the classification
         var response = await classifierAgent.RunAsync<QuestionClassification>(input);
-        var classification = response.Result;
+
+        // Try to get the structured result - handle JSON parsing failures gracefully
+        if (!response.TryGetResult(out var classification, out var parseError))
+        {
+            logger.LogWarning("Failed to parse classifier response: {Error}", parseError);
+            Console.WriteLine();
+            Console.WriteLine("Unable to classify the question. " + parseError);
+            Console.WriteLine();
+            continue;
+        }
+
+        logger.LogInformation("Classification: {Category}, Confidence: {Confidence:F2}",
+            classification.Category, classification.Confidence);
+
+        // Record classification metric
+        var metrics = host.Services.GetRequiredService<AgentMetrics>();
+        metrics.ClassificationResults.Add(1,
+            new KeyValuePair<string, object?>("category", classification.Category));
 
         Console.WriteLine();
         Console.WriteLine("Classification Result:");
@@ -99,7 +91,7 @@ while (true)
         // Show matching verified question if found
         if (!string.IsNullOrEmpty(classification.QuestionType))
         {
-            var matchedQuestion = verifiedQuestions.FirstOrDefault(q =>
+            var matchedQuestion = builder.VerifiedQuestions.FirstOrDefault(q =>
                 q.Id.Equals(classification.QuestionType, StringComparison.OrdinalIgnoreCase));
 
             if (matchedQuestion != null)
@@ -117,78 +109,10 @@ while (true)
     }
     catch (Exception ex)
     {
+        logger.LogError(ex, "Error processing user input: {Error}", ex.Message);
         Console.WriteLine($"Error: {ex.Message}");
         Console.WriteLine();
     }
 }
 
-// Helper method to create chat client from configuration
-static IChatClient CreateChatClient(LlmOptions options)
-{
-    return options.Provider switch
-    {
-        "AzureOpenAI" when options.AzureOpenAI is { Endpoint: not null, ApiKey: not null } =>
-            CreateAzureOpenAIChatClient(options.AzureOpenAI),
-
-        "OpenAI" when options.OpenAI is { ApiKey: not null } =>
-            CreateOpenAIChatClient(options.OpenAI),
-
-        "HuggingFace" when options.HuggingFace is { ApiKey: not null } =>
-            CreateHuggingFaceChatClient(options.HuggingFace),
-
-        _ => throw new InvalidOperationException($"Invalid provider configuration: {options.Provider}")
-    };
-}
-
-static IChatClient CreateAzureOpenAIChatClient(AzureOpenAIOptions options)
-{
-    Console.WriteLine($"Using Azure OpenAI: {options.Endpoint}");
-    var client = new Azure.AI.OpenAI.AzureOpenAIClient(
-        new Uri(options.Endpoint!),
-        new System.ClientModel.ApiKeyCredential(options.ApiKey!));
-    return client.GetChatClient(options.DeploymentName).AsIChatClient();
-}
-
-static IChatClient CreateOpenAIChatClient(OpenAIOptions options)
-{
-    Console.WriteLine($"Using OpenAI: {options.Model}");
-    OpenAI.OpenAIClient client;
-    if (!string.IsNullOrEmpty(options.Endpoint))
-    {
-        var clientOptions = new OpenAI.OpenAIClientOptions
-        {
-            Endpoint = new Uri(options.Endpoint)
-        };
-        client = new OpenAI.OpenAIClient(
-            new System.ClientModel.ApiKeyCredential(options.ApiKey!),
-            clientOptions);
-    }
-    else
-    {
-        client = new OpenAI.OpenAIClient(options.ApiKey!);
-    }
-
-    return client.GetChatClient(options.Model).AsIChatClient();
-}
-
-static IChatClient CreateHuggingFaceChatClient(HuggingFaceOptions options)
-{
-    Console.WriteLine($"Using HuggingFace: {options.Model}");
-
-    var endpointStr = options.Endpoint;
-    if (!endpointStr.EndsWith("/v1/", StringComparison.Ordinal) && !endpointStr.EndsWith("/v1", StringComparison.Ordinal))
-    {
-        endpointStr = endpointStr.TrimEnd('/') + "/v1/";
-    }
-
-    var clientOptions = new OpenAI.OpenAIClientOptions
-    {
-        Endpoint = new Uri(endpointStr)
-    };
-
-    var client = new OpenAI.OpenAIClient(
-        new System.ClientModel.ApiKeyCredential(options.ApiKey!),
-        clientOptions);
-
-    return client.GetChatClient(options.Model).AsIChatClient();
-}
+logger.LogInformation("Chatbot session ended");

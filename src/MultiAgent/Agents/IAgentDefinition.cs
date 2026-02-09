@@ -2,6 +2,7 @@
 
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using UtilityBillingChatbot.Telemetry;
 
 namespace UtilityBillingChatbot.MultiAgent.Agents;
 
@@ -25,6 +26,12 @@ public interface IAgentDefinition
     /// Brief description of the agent's purpose
     /// </summary>
     string Description { get; }
+
+    /// <summary>
+    /// Optional per-agent telemetry configuration.
+    /// Returns null to use default telemetry settings.
+    /// </summary>
+    AgentTelemetryConfiguration? TelemetryConfiguration => null;
 
     /// <summary>
     /// Builds a ChatClientAgent instance using the provided chat client.
