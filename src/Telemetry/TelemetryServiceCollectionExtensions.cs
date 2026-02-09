@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft. All rights reserved.
 
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using OpenTelemetry;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -15,6 +15,20 @@ namespace UtilityBillingChatbot.Telemetry;
 /// </summary>
 public static class TelemetryServiceCollectionExtensions
 {
+    /// <summary>
+    /// Adds telemetry services including logging, tracing, and metrics.
+    /// Uses configuration to bind TelemetryOptions.
+    /// </summary>
+    public static IServiceCollection AddTelemetryServices(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        var options = configuration.GetSection("Telemetry").Get<TelemetryOptions>()
+            ?? new TelemetryOptions();
+
+        return services.AddTelemetryServices(options);
+    }
+
     /// <summary>
     /// Adds telemetry services including logging, tracing, and metrics.
     /// </summary>
