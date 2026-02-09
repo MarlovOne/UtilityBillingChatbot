@@ -1,0 +1,31 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Azure -->
+    <PackageVersion Include="Azure.AI.OpenAI" Version="2.8.0-beta.1" />
+    <PackageVersion Include="Azure.Identity" Version="1.17.1" />
+    <!-- Microsoft.Extensions.AI -->
+    <PackageVersion Include="Microsoft.Extensions.AI" Version="10.2.0" />
+    <PackageVersion Include="Microsoft.Extensions.AI.OpenAI" Version="10.2.0-preview.1.26063.2" />
+    <!-- Microsoft.Extensions.DependencyInjection -->
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <!-- Microsoft.Extensions.Configuration -->
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.0" />
+    <!-- Microsoft.Agents.AI -->
+    <PackageVersion Include="Microsoft.Agents.AI" Version="1.0.0-preview.260205.1" />
+    <PackageVersion Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-preview.260205.1" />
+    <!-- OpenAI -->
+    <PackageVersion Include="OpenAI" Version="2.8.0" />
+    <!-- Test -->
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.0.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.3" />
+  </ItemGroup>
+</Project>

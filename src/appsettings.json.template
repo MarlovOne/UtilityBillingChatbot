@@ -1,0 +1,21 @@
+{
+  "LLM": {
+    "Provider": "OpenAI",
+    "AzureOpenAI": {
+      "Endpoint": "",
+      "ApiKey": "",
+      "DeploymentName": "gpt-4o-mini"
+    },
+    "OpenAI": {
+      "ApiKey": "your-api-key-here",
+      "Model": "gpt-4o-mini",
+      "Endpoint": ""
+    },
+    "HuggingFace": {
+      "ApiKey": "",
+      "Model": "meta-llama/Llama-3.1-8B-Instruct",
+      "Endpoint": "https://api-inference.huggingface.co/v1/"
+    }
+  },
+  "VerifiedQuestionsPath": "Data/verified-questions.json"
+}
