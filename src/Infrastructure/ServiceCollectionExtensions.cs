@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.FAQ;
 using UtilityBillingChatbot.Telemetry;
@@ -45,6 +46,7 @@ public static class ServiceCollectionExtensions
         // Add agents
         services.AddClassifierAgent();
         services.AddFAQAgent();
+        services.AddAuthAgent();
 
         // Add the chatbot background service
         services.AddHostedService<ChatbotService>();

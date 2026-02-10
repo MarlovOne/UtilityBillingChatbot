@@ -3,6 +3,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Telemetry;
 
@@ -14,19 +15,25 @@ namespace UtilityBillingChatbot.Infrastructure;
 public class ChatbotService : BackgroundService
 {
     private readonly ClassifierAgent _classifierAgent;
+    private readonly AuthAgent _authAgent;
     private readonly IReadOnlyList<VerifiedQuestion> _verifiedQuestions;
     private readonly AgentMetrics _metrics;
     private readonly LlmOptions _llmOptions;
     private readonly ILogger<ChatbotService> _logger;
 
+    // Auth session state
+    private AuthSession? _authSession;
+
     public ChatbotService(
         ClassifierAgent classifierAgent,
+        AuthAgent authAgent,
         IReadOnlyList<VerifiedQuestion> verifiedQuestions,
         AgentMetrics metrics,
         IOptions<LlmOptions> llmOptions,
         ILogger<ChatbotService> logger)
     {
         _classifierAgent = classifierAgent;
+        _authAgent = authAgent;
         _verifiedQuestions = verifiedQuestions;
         _metrics = metrics;
         _llmOptions = llmOptions.Value;
@@ -37,8 +44,9 @@ public class ChatbotService : BackgroundService
     {
         PrintStartupInfo();
 
-        Console.WriteLine("=== Utility Billing Customer Support Classifier ===");
-        Console.WriteLine("Enter your question (or 'quit' to exit):");
+        Console.WriteLine("=== Utility Billing Customer Support ===");
+        Console.WriteLine("Commands: 'auth' to start authentication, 'quit' to exit");
+        Console.WriteLine("Or enter a question to classify it.");
         Console.WriteLine();
 
         while (!stoppingToken.IsCancellationRequested)
@@ -97,6 +105,31 @@ public class ChatbotService : BackgroundService
         {
             _logger.LogInformation("User input received: {Length} chars", input.Length);
 
+            // Handle auth command
+            if (input.Equals("auth", StringComparison.OrdinalIgnoreCase))
+            {
+                await StartAuthSessionAsync(cancellationToken);
+                return;
+            }
+
+            // Handle done command to exit auth mode
+            if (input.Equals("done", StringComparison.OrdinalIgnoreCase) && _authSession != null)
+            {
+                _authSession = null;
+                Console.WriteLine();
+                Console.WriteLine("Exited auth mode.");
+                Console.WriteLine();
+                return;
+            }
+
+            // If in auth session, route to auth agent
+            if (_authSession != null)
+            {
+                await HandleAuthInputAsync(input, cancellationToken);
+                return;
+            }
+
+            // Default: classify the question
             var result = await _classifierAgent.ClassifyAsync(input, cancellationToken);
 
             if (!result.IsSuccess)
@@ -125,6 +158,54 @@ public class ChatbotService : BackgroundService
             Console.WriteLine($"Error: {ex.Message}");
             Console.WriteLine();
         }
+    }
+
+    private async Task StartAuthSessionAsync(CancellationToken cancellationToken)
+    {
+        Console.WriteLine();
+        Console.WriteLine("=== Authentication Session ===");
+        Console.WriteLine("Type 'done' to exit auth mode.");
+        Console.WriteLine();
+
+        var response = await _authAgent.RunAsync(
+            "I need to access my account.",
+            session: null,
+            cancellationToken);
+
+        _authSession = response.Session;
+
+        Console.WriteLine($"Agent: {response.Text}");
+        PrintAuthStatus(response);
+    }
+
+    private async Task HandleAuthInputAsync(string input, CancellationToken cancellationToken)
+    {
+        var response = await _authAgent.RunAsync(
+            input,
+            _authSession,
+            cancellationToken);
+
+        _authSession = response.Session;
+
+        Console.WriteLine();
+        Console.WriteLine($"Agent: {response.Text}");
+        PrintAuthStatus(response);
+
+        // If authenticated or locked out, offer to exit
+        if (response.AuthState is AuthenticationState.Authenticated or AuthenticationState.LockedOut)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Type 'done' to exit auth mode, or continue chatting.");
+        }
+    }
+
+    private static void PrintAuthStatus(AuthResponse response)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"  [State: {response.AuthState}" +
+            (response.CustomerName != null ? $", Customer: {response.CustomerName}" : "") +
+            (response.IsAuthenticated ? ", AUTHENTICATED" : "") + "]");
+        Console.WriteLine();
     }
 
     private void PrintClassificationResult(QuestionClassification classification)
