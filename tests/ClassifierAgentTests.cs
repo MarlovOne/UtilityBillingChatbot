@@ -12,6 +12,7 @@ namespace UtilityBillingChatbot.Tests;
 /// Integration tests for the Classifier Agent.
 /// These tests require a configured LLM endpoint (see appsettings.json).
 /// </summary>
+[Collection("Sequential")]
 public class ClassifierAgentTests : IAsyncLifetime
 {
     private IHost _host = null!;

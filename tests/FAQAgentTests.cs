@@ -12,6 +12,7 @@ namespace UtilityBillingChatbot.Tests;
 /// Integration tests for the FAQ Agent.
 /// These tests require a configured LLM endpoint (see appsettings.json).
 /// </summary>
+[Collection("Sequential")]
 public class FAQAgentTests : IAsyncLifetime
 {
     private IHost _host = null!;
