@@ -35,12 +35,14 @@ dotnet test --filter "FullyQualifiedName~ClassifierAgentTests.Classifier_Categor
 ```
 src/
 ├── Agents/
-│   └── Classifier/           # Question classification feature
-│       ├── ClassifierAgent.cs
-│       ├── ClassifierPrompts.cs
-│       ├── QuestionClassification.cs
-│       ├── QuestionCategory.cs
-│       └── VerifiedQuestion.cs
+│   ├── Classifier/           # Question classification feature
+│   │   ├── ClassifierAgent.cs
+│   │   ├── ClassifierPrompts.cs
+│   │   ├── QuestionClassification.cs
+│   │   ├── QuestionCategory.cs
+│   │   └── VerifiedQuestion.cs
+│   └── FAQ/                  # FAQ knowledge base agent
+│       └── FAQAgent.cs
 ├── Infrastructure/           # Cross-cutting concerns
 │   ├── ChatClientFactory.cs
 │   ├── ChatbotService.cs
@@ -52,7 +54,8 @@ src/
 │   ├── TelemetryServiceCollectionExtensions.cs
 │   └── Middleware/
 ├── Data/
-│   └── verified-questions.json
+│   ├── verified-questions.json
+│   └── faq-knowledge-base.md
 └── Program.cs
 ```
 
@@ -87,9 +90,11 @@ Register in `Infrastructure/ServiceCollectionExtensions.cs`: `services.AddFeatur
 | `Infrastructure/ServiceCollectionExtensions.cs` | Main DI setup, `AddUtilityBillingChatbot()` |
 | `Infrastructure/ChatClientFactory.cs` | Creates IChatClient (Azure/OpenAI/HuggingFace) |
 | `Agents/Classifier/ClassifierAgent.cs` | Question categorization with structured output |
+| `Agents/FAQ/FAQAgent.cs` | FAQ answers from knowledge base |
 | `Infrastructure/ChatbotService.cs` | Console REPL loop (BackgroundService) |
 | `Agents/Classifier/QuestionClassification.cs` | Classifier output schema |
 | `Data/verified-questions.json` | Known question types with metadata |
+| `Data/faq-knowledge-base.md` | FAQ knowledge base content |
 
 ## LLM Configuration
 
@@ -125,7 +130,7 @@ OpenTelemetry enabled by default. Configure in `appsettings.json`:
 | Stage | Component | Status |
 |-------|-----------|--------|
 | 1 | Classifier Agent | Implemented |
-| 2 | FAQ Agent | Planned |
+| 2 | FAQ Agent | Implemented |
 | 3 | In-Band Auth Agent | Planned |
 | 4 | Utility Data Agent | Planned |
 | 5 | Orchestrator | Planned |

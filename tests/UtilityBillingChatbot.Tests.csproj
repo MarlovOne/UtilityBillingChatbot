@@ -29,6 +29,9 @@
     <None Include="..\docs\verified-questions.json" Link="Data\verified-questions.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="..\src\Data\faq-knowledge-base.md" Link="Data\faq-knowledge-base.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>
