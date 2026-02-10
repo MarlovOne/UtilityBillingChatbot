@@ -3,7 +3,7 @@
 using System.ComponentModel;
 using System.Text.Json.Serialization;
 
-namespace UtilityBillingChatbot.Models;
+namespace UtilityBillingChatbot.Agents.Classifier;
 
 /// <summary>
 /// Structured output from the Classifier Agent for utility billing questions

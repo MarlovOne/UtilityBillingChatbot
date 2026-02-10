@@ -65,23 +65,27 @@ public static class TelemetryServiceCollectionExtensions
             loggingBuilder.SetMinimumLevel(options.MinimumLogLevel);
             loggingBuilder.AddConsole();
 
-            loggingBuilder.AddOpenTelemetry(otelOptions =>
+            // Only add OpenTelemetry logging if there's an exporter configured
+            if (!string.IsNullOrEmpty(otlpEndpoint) || options.EnableConsoleExporter)
             {
-                otelOptions.SetResourceBuilder(resourceBuilder);
-                otelOptions.IncludeScopes = true;
-                otelOptions.IncludeFormattedMessage = true;
-
-                if (!string.IsNullOrEmpty(otlpEndpoint))
+                loggingBuilder.AddOpenTelemetry(otelOptions =>
                 {
-                    otelOptions.AddOtlpExporter(otlpOptions =>
-                        otlpOptions.Endpoint = new Uri(otlpEndpoint));
-                }
+                    otelOptions.SetResourceBuilder(resourceBuilder);
+                    otelOptions.IncludeScopes = true;
+                    otelOptions.IncludeFormattedMessage = true;
 
-                if (options.EnableConsoleExporter)
-                {
-                    otelOptions.AddConsoleExporter();
-                }
-            });
+                    if (!string.IsNullOrEmpty(otlpEndpoint))
+                    {
+                        otelOptions.AddOtlpExporter(otlpOptions =>
+                            otlpOptions.Endpoint = new Uri(otlpEndpoint));
+                    }
+
+                    if (options.EnableConsoleExporter)
+                    {
+                        otelOptions.AddConsoleExporter();
+                    }
+                });
+            }
         });
 
         // Configure tracing

@@ -2,7 +2,7 @@
 
 using System.Text.Json.Serialization;
 
-namespace UtilityBillingChatbot.Models;
+namespace UtilityBillingChatbot.Agents.Classifier;
 
 /// <summary>
 /// Represents a verified question type from the verified-questions.json file.

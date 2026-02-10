@@ -1,9 +1,8 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using Microsoft.Extensions.AI;
-using UtilityBillingChatbot.Models;
 
-namespace UtilityBillingChatbot.Hosting;
+namespace UtilityBillingChatbot.Infrastructure;
 
 /// <summary>
 /// Factory for creating chat clients based on LLM configuration.

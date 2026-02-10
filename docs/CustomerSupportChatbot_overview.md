@@ -1,3 +1,5 @@
+# Utility Billing Customer Support Chatbot - Overview & Core Components
+
 ## Overview
 
 This document provides a staged implementation reference for a multi-agent customer support chatbot for **utility billing** using the Microsoft Agent Framework. The system routes customer questions through specialized agents, handles authentication for account-specific data (CIS/MDM), and provides seamless handoff to human representatives for complex requests.
@@ -385,3 +387,23 @@ public interface IHandoffService
 - **Composition**: Wrap factories with decorators (caching, logging, metrics)
 
 ---
+
+## Stage Documents
+
+For detailed implementation of each stage, see:
+
+| Stage | Document | Description |
+|-------|----------|-------------|
+| 1 | [Stage 1: Classifier](CustomerSupportChatbot_stage01_classifier.md) | Question categorization agent |
+| 2 | [Stage 2: FAQ Agent](CustomerSupportChatbot_stage02_faq.md) | Knowledge base Q&A |
+| 3 | [Stage 3: Auth Agent](CustomerSupportChatbot_stage03_auth.md) | In-band identity verification |
+| 4 | [Stage 4: Data Agent](CustomerSupportChatbot_stage04_data.md) | Account data access |
+| 5 | [Stage 5: Orchestrator](CustomerSupportChatbot_stage05_orchestrator.md) | Message routing & session management |
+| 6 | [Stage 6: Handoff](CustomerSupportChatbot_stage06_handoff.md) | Human agent escalation |
+| 7 | [Stage 7: Persistence](CustomerSupportChatbot_stage07_persistence.md) | Session serialization |
+
+---
+
+## Related Documents
+
+- [Appendices](CustomerSupportChatbot_appendices.md) - Project structure, pattern analysis, dependencies, next steps

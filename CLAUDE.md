@@ -30,12 +30,30 @@ dotnet test --filter "FullyQualifiedName~ClassifierAgentTests.Classifier_Categor
 
 ## Architecture
 
-**Pattern**: .NET Generic Host with BackgroundService. Agents registered via DI extension methods.
+**Pattern**: Vertical (feature-based) architecture with .NET Generic Host and BackgroundService.
 
 ```
-Program.cs → Host.CreateApplicationBuilder()
-           → AddUtilityBillingChatbot(config)
-           → ChatbotService (BackgroundService, REPL loop)
+src/
+├── Agents/
+│   └── Classifier/           # Question classification feature
+│       ├── ClassifierAgent.cs
+│       ├── ClassifierPrompts.cs
+│       ├── QuestionClassification.cs
+│       ├── QuestionCategory.cs
+│       └── VerifiedQuestion.cs
+├── Infrastructure/           # Cross-cutting concerns
+│   ├── ChatClientFactory.cs
+│   ├── ChatbotService.cs
+│   ├── LlmOptions.cs
+│   └── ServiceCollectionExtensions.cs
+├── Telemetry/               # Observability
+│   ├── AgentMetrics.cs
+│   ├── TelemetryOptions.cs
+│   ├── TelemetryServiceCollectionExtensions.cs
+│   └── Middleware/
+├── Data/
+│   └── verified-questions.json
+└── Program.cs
 ```
 
 **Key flow:**
@@ -45,7 +63,7 @@ Program.cs → Host.CreateApplicationBuilder()
 
 **Agent pattern:**
 ```csharp
-// Agents/{Feature}Agent.cs
+// Agents/{Feature}/{Feature}Agent.cs
 public class FeatureAgent
 {
     private readonly ChatClientAgent _agent;
@@ -60,18 +78,18 @@ public static class FeatureAgentExtensions
 }
 ```
 
-Register in `Hosting/ServiceCollectionExtensions.cs`: `services.AddFeatureAgent();`
+Register in `Infrastructure/ServiceCollectionExtensions.cs`: `services.AddFeatureAgent();`
 
 ## Key Files
 
 | Path | Purpose |
 |------|---------|
-| `Hosting/ServiceCollectionExtensions.cs` | Main DI setup, `AddUtilityBillingChatbot()` |
-| `Hosting/ChatClientFactory.cs` | Creates IChatClient (Azure/OpenAI/HuggingFace) |
-| `Agents/ClassifierAgent.cs` | Question categorization with structured output |
-| `Services/ChatbotService.cs` | Console REPL loop (BackgroundService) |
-| `Models/QuestionClassification.cs` | Classifier output schema |
-| `docs/verified-questions.json` | Known question types with metadata |
+| `Infrastructure/ServiceCollectionExtensions.cs` | Main DI setup, `AddUtilityBillingChatbot()` |
+| `Infrastructure/ChatClientFactory.cs` | Creates IChatClient (Azure/OpenAI/HuggingFace) |
+| `Agents/Classifier/ClassifierAgent.cs` | Question categorization with structured output |
+| `Infrastructure/ChatbotService.cs` | Console REPL loop (BackgroundService) |
+| `Agents/Classifier/QuestionClassification.cs` | Classifier output schema |
+| `Data/verified-questions.json` | Known question types with metadata |
 
 ## LLM Configuration
 
@@ -80,11 +98,11 @@ Three providers supported in `appsettings.json`:
 - `OpenAI`: ApiKey + Model (+ optional custom Endpoint for local LLMs)
 - `HuggingFace`: ApiKey (or `HF_TOKEN` env var) + Model + Endpoint
 
-## Adding New Agents
+## Adding New Features
 
-1. Create `Agents/{Name}Agent.cs` with agent class + `Add{Name}Agent()` extension
-2. Create `Models/{Name}Output.cs` if new output type needed (with `[JsonPropertyName]` attributes)
-3. Call `services.Add{Name}Agent()` in `ServiceCollectionExtensions.cs`
+1. Create `Agents/{Name}/` directory with agent class + models
+2. Add `Add{Name}Agent()` extension in the agent file
+3. Call `services.Add{Name}Agent()` in `Infrastructure/ServiceCollectionExtensions.cs`
 4. Inject into `ChatbotService` and add routing logic
 
 ## Structured Output

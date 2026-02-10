@@ -3,11 +3,10 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using UtilityBillingChatbot.Agents;
-using UtilityBillingChatbot.Models;
+using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Telemetry;
 
-namespace UtilityBillingChatbot.Services;
+namespace UtilityBillingChatbot.Infrastructure;
 
 /// <summary>
 /// Background service that runs the interactive chatbot console.

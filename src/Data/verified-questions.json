@@ -1,0 +1,345 @@
+[
+  {
+    "id": "bill-high",
+    "description": "Why is my bill so high",
+    "patterns": [
+      "why is my bill so high",
+      "bill too high",
+      "high bill",
+      "bill higher than usual",
+      "expensive bill",
+      "bill went up"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your billing information. Please try again or contact support."
+  },
+  {
+    "id": "balance-inquiry",
+    "description": "What is my current account balance / how much do I owe",
+    "patterns": [
+      "what is my balance",
+      "how much do i owe",
+      "current balance",
+      "amount due",
+      "account balance"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "CustomerData"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your balance. Please try again or contact support."
+  },
+  {
+    "id": "payment-status",
+    "description": "Did you receive my payment / Did my payment go through",
+    "patterns": [
+      "did you receive my payment",
+      "did my payment go through",
+      "payment status",
+      "was my payment received",
+      "payment confirmation"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "CustomerData"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't verify your payment status. Please try again or contact support."
+  },
+  {
+    "id": "payment-due-date",
+    "description": "When is my payment due",
+    "patterns": [
+      "when is my payment due",
+      "due date",
+      "when is my bill due",
+      "payment deadline",
+      "billing due date"
+    ],
+    "requiredPlugins": [
+      "CIS"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your due date. Please try again or contact support."
+  },
+  {
+    "id": "payment-options",
+    "description": "How can I pay my bill",
+    "patterns": [
+      "how can i pay my bill",
+      "payment options",
+      "ways to pay",
+      "how to pay",
+      "make a payment"
+    ],
+    "requiredPlugins": [
+      "RAG"
+    ],
+    "requiredAuthLevel": "None",
+    "fallbackMessage": null
+  },
+  {
+    "id": "payment-arrangement",
+    "description": "Can I get an extension or set up a payment arrangement",
+    "patterns": [
+      "payment arrangement",
+      "payment plan",
+      "payment extension",
+      "extend due date",
+      "cant pay full amount",
+      "need more time to pay"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your account information. Please try again or contact support."
+  },
+  {
+    "id": "assistance-programs",
+    "description": "What assistance programs can help me pay my bill",
+    "patterns": [
+      "assistance programs",
+      "help paying bill",
+      "financial assistance",
+      "bill assistance",
+      "low income programs",
+      "liheap"
+    ],
+    "requiredPlugins": [
+      "RAG",
+      "CIS"
+    ],
+    "requiredAuthLevel": "None",
+    "fallbackMessage": null
+  },
+  {
+    "id": "budget-billing",
+    "description": "Can I enroll in budget billing (levelized payment)",
+    "patterns": [
+      "budget billing",
+      "levelized payment",
+      "budget plan",
+      "level billing",
+      "average billing",
+      "equal payments"
+    ],
+    "requiredPlugins": [
+      "CIS"
+    ],
+    "requiredAuthLevel": "Elevated",
+    "fallbackMessage": "I couldn't retrieve your budget billing eligibility. Please try again or contact support."
+  },
+  {
+    "id": "autopay-signup",
+    "description": "How do I sign up for AutoPay",
+    "patterns": [
+      "sign up for autopay",
+      "enroll autopay",
+      "automatic payment",
+      "set up autopay",
+      "autopay enrollment"
+    ],
+    "requiredPlugins": [
+      "CustomerData",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Elevated",
+    "fallbackMessage": "I couldn't process your AutoPay enrollment. Please try again or contact support."
+  },
+  {
+    "id": "autopay-status",
+    "description": "How do I know if I'm on AutoPay (or cancel it)",
+    "patterns": [
+      "am i on autopay",
+      "autopay status",
+      "cancel autopay",
+      "stop autopay",
+      "check autopay"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "CustomerData"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your AutoPay status. Please try again or contact support."
+  },
+  {
+    "id": "billing-cycle-explanation",
+    "description": "Why does my due date or billing period change each month",
+    "patterns": [
+      "billing period change",
+      "due date change",
+      "billing cycle",
+      "different due date",
+      "billing schedule"
+    ],
+    "requiredPlugins": [
+      "RAG"
+    ],
+    "requiredAuthLevel": "None",
+    "fallbackMessage": null
+  },
+  {
+    "id": "charge-explanation",
+    "description": "What is this extra charge/fee on my bill",
+    "patterns": [
+      "extra charge on my bill",
+      "what is this fee",
+      "explain this charge",
+      "bill fee",
+      "additional charge",
+      "line item"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your charge details. Please try again or contact support."
+  },
+  {
+    "id": "meter-read-type",
+    "description": "Is my bill based on an actual meter read or estimate",
+    "patterns": [
+      "actual meter read",
+      "estimated bill",
+      "was my meter read",
+      "estimate or actual",
+      "meter reading"
+    ],
+    "requiredPlugins": [
+      "CIS"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your meter read information. Please try again or contact support."
+  },
+  {
+    "id": "meter-check-request",
+    "description": "I think my bill is wrong - can someone check my meter",
+    "patterns": [
+      "bill is wrong",
+      "check my meter",
+      "meter test",
+      "reread meter",
+      "dispute bill",
+      "incorrect bill"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't process your meter check request. Please try again or contact support."
+  },
+  {
+    "id": "rate-plan-inquiry",
+    "description": "Am I on the best rate plan",
+    "patterns": [
+      "best rate plan",
+      "rate options",
+      "change rate plan",
+      "better rate",
+      "rate comparison",
+      "switch rates"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your rate plan information. Please try again or contact support."
+  },
+  {
+    "id": "alternate-supplier",
+    "description": "Why am I charged by an alternate supplier",
+    "patterns": [
+      "alternate supplier",
+      "third party supplier",
+      "energy supplier",
+      "supplier charge",
+      "competitive supplier"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your supplier information. Please try again or contact support."
+  },
+  {
+    "id": "demand-charge-explanation",
+    "description": "What is a demand charge on my bill (commercial)",
+    "patterns": [
+      "demand charge",
+      "what is demand",
+      "demand fee",
+      "peak demand",
+      "commercial demand"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "None",
+    "fallbackMessage": null
+  },
+  {
+    "id": "bill-reduction-tips",
+    "description": "How can I reduce my bill",
+    "patterns": [
+      "reduce my bill",
+      "lower my bill",
+      "save money",
+      "energy savings",
+      "reduce usage",
+      "efficiency tips"
+    ],
+    "requiredPlugins": [
+      "RAG"
+    ],
+    "requiredAuthLevel": "None",
+    "fallbackMessage": null
+  },
+  {
+    "id": "bill-copy-request",
+    "description": "Can I get a copy of my bill or history",
+    "patterns": [
+      "copy of my bill",
+      "bill history",
+      "billing history",
+      "past bills",
+      "bill statement",
+      "print bill"
+    ],
+    "requiredPlugins": [
+      "CustomerData"
+    ],
+    "requiredAuthLevel": "Basic",
+    "fallbackMessage": "I couldn't retrieve your bill copies. Please try again or contact support."
+  },
+  {
+    "id": "contact-update",
+    "description": "How do I update my mailing address or contact info",
+    "patterns": [
+      "update my address",
+      "change address",
+      "update contact info",
+      "new address",
+      "update phone",
+      "change email"
+    ],
+    "requiredPlugins": [
+      "CIS",
+      "RAG"
+    ],
+    "requiredAuthLevel": "Elevated",
+    "fallbackMessage": "I couldn't process your contact update. Please try again or contact support."
+  }
+]

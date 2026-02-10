@@ -4,12 +4,10 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using UtilityBillingChatbot.Agents;
-using UtilityBillingChatbot.Models;
-using UtilityBillingChatbot.Services;
+using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Telemetry;
 
-namespace UtilityBillingChatbot.Hosting;
+namespace UtilityBillingChatbot.Infrastructure;
 
 /// <summary>
 /// Extension methods for configuring the utility billing chatbot services.

@@ -1,8 +1,10 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using UtilityBillingChatbot.Extensions;
-using UtilityBillingChatbot.Hosting;
-using UtilityBillingChatbot.Models;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using UtilityBillingChatbot.Agents.Classifier;
+using UtilityBillingChatbot.Infrastructure;
 
 namespace UtilityBillingChatbot.Tests;
 
@@ -12,12 +14,23 @@ namespace UtilityBillingChatbot.Tests;
 /// </summary>
 public class ClassifierAgentTests : IAsyncLifetime
 {
-    private ChatbotHost _host = null!;
+    private IHost _host = null!;
+    private ClassifierAgent _classifierAgent = null!;
 
-    public async Task InitializeAsync()
+    public Task InitializeAsync()
     {
-        var builder = new ChatbotHostBuilder();
-        _host = await builder.BuildAsync(enableTelemetry: false);
+        var builder = Host.CreateApplicationBuilder();
+
+        builder.Configuration.SetBasePath(AppContext.BaseDirectory);
+        builder.Configuration.AddJsonFile("appsettings.json", optional: false);
+        builder.Configuration.AddEnvironmentVariables();
+
+        builder.Services.AddUtilityBillingChatbot(builder.Configuration);
+
+        _host = builder.Build();
+        _classifierAgent = _host.Services.GetRequiredService<ClassifierAgent>();
+
+        return Task.CompletedTask;
     }
 
     public Task DisposeAsync()
@@ -29,49 +42,31 @@ public class ClassifierAgentTests : IAsyncLifetime
     [Fact]
     public async Task Classifier_CategorizesBillingFAQ()
     {
-        var classifier = _host.AgentRegistry.GetBaseAgent("classifier");
-        var response = await classifier.RunAsync<QuestionClassification>("How can I pay my bill?");
+        var result = await _classifierAgent.ClassifyAsync("How can I pay my bill?");
 
-        if (!response.TryGetResult(out var classification, out var error))
-        {
-            Assert.Fail(error);
-            return;
-        }
-
-        Assert.Equal(QuestionCategory.BillingFAQ, classification.Category);
-        Assert.False(classification.RequiresAuth);
-        Assert.Equal("payment-options", classification.QuestionType);
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(QuestionCategory.BillingFAQ, result.Classification!.Category);
+        Assert.False(result.Classification.RequiresAuth);
+        Assert.Equal("payment-options", result.Classification.QuestionType);
     }
 
     [Fact]
     public async Task Classifier_RequiresAuth_ForAccountData()
     {
-        var classifier = _host.AgentRegistry.GetBaseAgent("classifier");
-        var response = await classifier.RunAsync<QuestionClassification>("What is my current account balance?");
+        var result = await _classifierAgent.ClassifyAsync("What is my current account balance?");
 
-        if (!response.TryGetResult(out var classification, out var error))
-        {
-            Assert.Fail(error);
-            return;
-        }
-
-        Assert.Equal(QuestionCategory.AccountData, classification.Category);
-        Assert.True(classification.RequiresAuth);
-        Assert.Equal("balance-inquiry", classification.QuestionType);
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(QuestionCategory.AccountData, result.Classification!.Category);
+        Assert.True(result.Classification.RequiresAuth);
+        Assert.Equal("balance-inquiry", result.Classification.QuestionType);
     }
 
     [Fact]
     public async Task Classifier_HandlesOutOfScope()
     {
-        var classifier = _host.AgentRegistry.GetBaseAgent("classifier");
-        var response = await classifier.RunAsync<QuestionClassification>("What's the weather tomorrow?");
+        var result = await _classifierAgent.ClassifyAsync("What's the weather tomorrow?");
 
-        if (!response.TryGetResult(out var classification, out var error))
-        {
-            Assert.Fail(error);
-            return;
-        }
-
-        Assert.Equal(QuestionCategory.OutOfScope, classification.Category);
+        Assert.True(result.IsSuccess, result.Error);
+        Assert.Equal(QuestionCategory.OutOfScope, result.Classification!.Category);
     }
 }

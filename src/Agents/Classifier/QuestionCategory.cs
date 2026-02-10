@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-namespace UtilityBillingChatbot.Models;
+namespace UtilityBillingChatbot.Agents.Classifier;
 
 /// <summary>
 /// Category of a utility billing customer question

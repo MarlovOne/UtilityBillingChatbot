@@ -2,7 +2,7 @@
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
-using UtilityBillingChatbot.Hosting;
+using UtilityBillingChatbot.Infrastructure;
 
 var builder = Host.CreateApplicationBuilder(args);
 
