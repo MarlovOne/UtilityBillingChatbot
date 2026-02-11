@@ -3,6 +3,45 @@
 ### Objective
 Build the main orchestrator that routes user messages through the classifier and dispatches to appropriate agents.
 
+### Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Agent creation | Direct injection | Simpler, matches existing agent patterns |
+| Session storage | `ISessionStore` interface with `InMemorySessionStore` | Easy to swap to Redis/database later |
+| File location | `src/Orchestration/` folder | Coordinator is not an agent, deserves own namespace |
+| Console UI | Refactor `ChatbotService` to thin wrapper | Separates I/O from routing logic |
+| Conversation history | Full history with timestamps | Enables context-aware responses and future handoff summaries |
+| Error handling | Simple error responses | Honest messaging; no fake handoff until Stage 6 |
+| UtilityDataSession | Recreate each time (not stored) | Users don't check multiple accounts; keeps ChatSession simple |
+
+### File Structure
+
+```
+src/Orchestration/
+├── ChatbotOrchestrator.cs      # Main routing logic
+├── OrchestratorModels.cs       # ChatResponse, RequiredAction, ConversationMessage
+├── ChatSession.cs              # Session state with conversation history
+├── UserSessionContext.cs       # Auth state, customer info, expiry
+├── ISessionStore.cs            # Persistence interface
+└── InMemorySessionStore.cs     # In-memory implementation
+
+src/Infrastructure/
+└── ChatbotService.cs           # Refactored to thin console wrapper (~50 lines)
+```
+
+### Dependencies
+
+```
+ChatbotOrchestrator
+├── ClassifierAgent      (injected directly)
+├── FAQAgent             (injected directly)
+├── AuthAgent            (injected directly)
+├── UtilityDataAgent     (injected directly)
+├── ISessionStore        (injected)
+└── ILogger              (injected)
+```
+
 ### Architecture Pattern: Custom Orchestrator with Manual Routing
 
 > **Note**: This implementation uses a custom orchestrator class with manual routing logic.
@@ -10,32 +49,34 @@ Build the main orchestrator that routes user messages through the classifier and
 > The custom approach is suitable for prototyping; consider migrating for production.
 
 ```csharp
+// src/Orchestration/ChatbotOrchestrator.cs
+
 public class ChatbotOrchestrator
 {
-    private readonly IChatClient _chatClient;
-    private readonly IClassifierAgentFactory _classifierFactory;
-    private readonly IFAQAgentFactory _faqFactory;
-    private readonly IUtilityDataAgentFactory _utilityDataFactory;
-    private readonly IInBandAuthAgentFactory _authAgentFactory;
+    private readonly ClassifierAgent _classifierAgent;
+    private readonly FAQAgent _faqAgent;
+    private readonly AuthAgent _authAgent;
+    private readonly UtilityDataAgent _utilityDataAgent;
     private readonly ISessionStore _sessionStore;
+    private readonly ILogger<ChatbotOrchestrator> _logger;
 
     // In-memory cache for active sessions (backed by ISessionStore for persistence)
     private readonly ConcurrentDictionary<string, ChatSession> _sessionCache = new();
 
     public ChatbotOrchestrator(
-        IChatClient chatClient,
-        IClassifierAgentFactory classifierFactory,
-        IFAQAgentFactory faqFactory,
-        IUtilityDataAgentFactory utilityDataFactory,
-        IInBandAuthAgentFactory authAgentFactory,
-        ISessionStore sessionStore)
+        ClassifierAgent classifierAgent,
+        FAQAgent faqAgent,
+        AuthAgent authAgent,
+        UtilityDataAgent utilityDataAgent,
+        ISessionStore sessionStore,
+        ILogger<ChatbotOrchestrator> logger)
     {
-        _chatClient = chatClient;
-        _classifierFactory = classifierFactory;
-        _faqFactory = faqFactory;
-        _utilityDataFactory = utilityDataFactory;
-        _authAgentFactory = authAgentFactory;
+        _classifierAgent = classifierAgent;
+        _faqAgent = faqAgent;
+        _authAgent = authAgent;
+        _utilityDataAgent = utilityDataAgent;
         _sessionStore = sessionStore;
+        _logger = logger;
     }
 
     public async Task<ChatResponse> ProcessMessageAsync(
@@ -63,7 +104,14 @@ public class ChatbotOrchestrator
             }
 
             // Step 1: Classify the question
-            var classification = await ClassifyQuestionAsync(userMessage, chatSession, cancellationToken);
+            var classificationResult = await _classifierAgent.ClassifyAsync(userMessage, cancellationToken);
+
+            if (!classificationResult.IsSuccess)
+            {
+                return CreateErrorResponse($"Classification failed: {classificationResult.Error}");
+            }
+
+            var classification = classificationResult.Classification!;
 
             // Step 2: Route based on classification
             var response = classification.Category switch
@@ -75,15 +123,15 @@ public class ChatbotOrchestrator
                     await HandleAccountDataAsync(userMessage, chatSession, classification, cancellationToken),
 
                 QuestionCategory.ServiceRequest =>
-                    await InitiateHumanHandoffAsync(userMessage, chatSession, "Service request requires CSR assistance", cancellationToken),
+                    CreateServiceRequestResponse(),
 
                 QuestionCategory.HumanRequested =>
-                    await InitiateHumanHandoffAsync(userMessage, chatSession, "User requested human assistance", cancellationToken),
+                    CreateHumanRequestedResponse(),
 
                 QuestionCategory.OutOfScope =>
-                    await HandleOutOfScopeAsync(userMessage, chatSession, classification, cancellationToken),
+                    HandleOutOfScope(classification),
 
-                _ => throw new InvalidOperationException($"Unknown category: {classification.Category}")
+                _ => CreateErrorResponse($"Unknown category: {classification.Category}")
             };
 
             // Add response to history
@@ -98,36 +146,9 @@ public class ChatbotOrchestrator
         }
         catch (Exception ex)
         {
-            // Log error and attempt graceful degradation
-            // In production, use proper logging
-            Console.WriteLine($"Error processing message: {ex.Message}");
-
-            return await InitiateHumanHandoffAsync(
-                userMessage,
-                chatSession,
-                $"System error: {ex.Message}",
-                cancellationToken);
+            _logger.LogError(ex, "Error processing message: {Error}", ex.Message);
+            return CreateErrorResponse($"An error occurred: {ex.Message}");
         }
-    }
-
-    private async Task<QuestionClassification> ClassifyQuestionAsync(
-        string message,
-        ChatSession session,
-        CancellationToken cancellationToken)
-    {
-        var classifier = _classifierFactory.CreateClassifierAgent();
-
-        // Create session with conversation context for better classification
-        var agentSession = await classifier.CreateSessionAsync(
-            AIContextProviderFactory: (ctx, ct) => new ValueTask<AIContextProvider>(
-                new ConversationContextProvider(session.ConversationHistory)));
-
-        var response = await classifier.RunAsync<QuestionClassification>(
-            message,
-            agentSession,
-            cancellationToken: cancellationToken);
-
-        return response.Result;
     }
 
     private async Task<ChatResponse> HandleBillingFAQAsync(
@@ -135,16 +156,7 @@ public class ChatbotOrchestrator
         ChatSession session,
         CancellationToken cancellationToken)
     {
-        var faqAgent = _faqFactory.CreateFAQAgent();
-        var agentSession = await faqAgent.CreateSessionAsync();
-
-        // Inject conversation history for context
-        foreach (var historyMessage in session.ConversationHistory.TakeLast(10))
-        {
-            // Add relevant history to session
-        }
-
-        var response = await faqAgent.RunAsync(message, agentSession, cancellationToken: cancellationToken);
+        var response = await _faqAgent.AnswerAsync(message, cancellationToken);
 
         return new ChatResponse
         {
@@ -177,12 +189,10 @@ public class ChatbotOrchestrator
         }
 
         // User is authenticated - proceed with data agent
-        var dataAgent = _utilityDataFactory.CreateUtilityDataAgent(session.UserContext);
-        var agentSession = await dataAgent.CreateSessionAsync(
-            AIContextProviderFactory: (ctx, ct) => new ValueTask<AIContextProvider>(
-                new AuthContextProvider(session.UserContext)));
-
-        var response = await dataAgent.RunAsync(message, agentSession, cancellationToken: cancellationToken);
+        var response = await _utilityDataAgent.RunAsync(
+            message,
+            authSession: session.AuthSession,
+            cancellationToken: cancellationToken);
 
         return new ChatResponse
         {
@@ -193,7 +203,7 @@ public class ChatbotOrchestrator
     }
 
     /// <summary>
-    /// Initiates the in-band authentication flow using the InBandAuthAgent.
+    /// Initiates the in-band authentication flow.
     /// Stores the pending query to resume after successful authentication.
     /// </summary>
     private async Task<ChatResponse> InitiateAuthenticationFlowAsync(
@@ -207,15 +217,14 @@ public class ChatbotOrchestrator
         // Mark session as in authentication flow
         session.UserContext.AuthState = AuthenticationState.InProgress;
 
-        // Create auth agent and session (pass context so tools can modify auth state)
-        var authAgent = _authAgentFactory.CreateInBandAuthAgent(session.UserContext);
-        session.AuthAgentSession = await authAgent.CreateSessionAsync();
+        // Start auth conversation
+        var response = await _authAgent.RunAsync(
+            pendingMessage,
+            session: null,
+            cancellationToken);
 
-        // Initial prompt from auth agent
-        var response = await authAgent.RunAsync(
-            "Start identity verification for account access",
-            session.AuthAgentSession,
-            cancellationToken: cancellationToken);
+        // Store the auth session for multi-turn flow
+        session.AuthSession = response.Session;
 
         return new ChatResponse
         {
@@ -226,7 +235,7 @@ public class ChatbotOrchestrator
     }
 
     /// <summary>
-    /// Continues an in-progress authentication flow by routing user input to the InBandAuthAgent.
+    /// Continues an in-progress authentication flow by routing user input to the AuthAgent.
     /// Automatically resumes the pending query upon successful authentication.
     /// </summary>
     private async Task<ChatResponse> ContinueAuthenticationFlowAsync(
@@ -234,31 +243,35 @@ public class ChatbotOrchestrator
         ChatSession session,
         CancellationToken cancellationToken)
     {
-        if (session.AuthAgentSession == null)
+        if (session.AuthSession == null)
         {
             // Shouldn't happen, but handle gracefully
             session.UserContext.AuthState = AuthenticationState.Anonymous;
             return new ChatResponse
             {
-                Message = "I apologize, there was an issue with the verification process. Let's start over. " +
-                         "Can you please provide your account number or phone number?",
+                Message = "I apologize, there was an issue with the verification process. " +
+                         "Please try asking your question again.",
                 Category = QuestionCategory.AccountData,
-                RequiredAction = RequiredAction.AuthenticationRequired
+                RequiredAction = RequiredAction.None
             };
         }
 
         // Continue the auth conversation
-        var authAgent = _authAgentFactory.CreateInBandAuthAgent(session.UserContext);
-        var response = await authAgent.RunAsync(
+        var response = await _authAgent.RunAsync(
             userMessage,
-            session.AuthAgentSession,
-            cancellationToken: cancellationToken);
+            session.AuthSession,
+            cancellationToken);
 
-        // Check if authentication completed (agent sets context)
-        if (session.UserContext.AuthState == AuthenticationState.Authenticated)
+        // Update auth session
+        session.AuthSession = response.Session;
+
+        // Check if authentication completed
+        if (response.IsAuthenticated)
         {
-            // Clear auth session
-            session.AuthAgentSession = null;
+            session.UserContext.AuthState = AuthenticationState.Authenticated;
+            session.UserContext.CustomerId = response.CustomerId;
+            session.UserContext.CustomerName = response.CustomerName;
+            session.UserContext.SessionExpiry = DateTimeOffset.UtcNow.AddMinutes(30);
 
             // Resume pending query if exists
             if (!string.IsNullOrEmpty(session.PendingQuery))
@@ -287,17 +300,18 @@ public class ChatbotOrchestrator
         }
 
         // Check if authentication failed (locked out)
-        if (session.UserContext.AuthState == AuthenticationState.LockedOut)
+        if (response.AuthState == AuthenticationState.LockedOut)
         {
-            session.AuthAgentSession = null;
+            session.AuthSession = null;
             session.PendingQuery = null;
+            session.UserContext.AuthState = AuthenticationState.LockedOut;
 
-            // Escalate to human
-            return await InitiateHumanHandoffAsync(
-                session.PendingQuery ?? "Authentication assistance needed",
-                session,
-                "User locked out after failed verification attempts",
-                cancellationToken);
+            return new ChatResponse
+            {
+                Message = response.Text,
+                Category = QuestionCategory.AccountData,
+                RequiredAction = RequiredAction.AuthenticationFailed
+            };
         }
 
         // Still in progress - return agent's response (asking for next verification item)
@@ -309,54 +323,64 @@ public class ChatbotOrchestrator
         };
     }
 
-    private async Task<ChatResponse> HandleOutOfScopeAsync(
-        string message,
-        ChatSession session,
-        QuestionClassification classification,
-        CancellationToken cancellationToken)
+    private static ChatResponse HandleOutOfScope(QuestionClassification classification)
     {
-        // Low confidence - try to help but offer human handoff
         if (classification.Confidence < 0.3)
         {
-            return await InitiateHumanHandoffAsync(
-                message,
-                session,
-                $"Low confidence classification: {classification.Reasoning}",
-                cancellationToken);
+            return new ChatResponse
+            {
+                Message = "I'm sorry, I couldn't understand your question. " +
+                         "I can help with billing questions, account information, and payment options.",
+                Category = QuestionCategory.OutOfScope,
+                RequiredAction = RequiredAction.ClarificationNeeded
+            };
         }
 
-        // Medium confidence - try to help
         return new ChatResponse
         {
-            Message = "I'm not entirely sure I understand your question. Could you rephrase it, " +
-                     "or would you like me to connect you with a customer service representative?",
+            Message = "I'm not able to help with that question. " +
+                     "I can assist with utility billing, account balances, payment options, and similar topics.",
             Category = QuestionCategory.OutOfScope,
-            RequiredAction = RequiredAction.ClarificationNeeded
+            RequiredAction = RequiredAction.None
         };
     }
 
-    private async Task<ChatResponse> InitiateHumanHandoffAsync(
-        string message,
-        ChatSession session,
-        string reason,
-        CancellationToken cancellationToken)
+    private static ChatResponse CreateServiceRequestResponse()
     {
-        // This will be fully implemented in Stage 6
-        // For now, return a placeholder response
+        // Stage 6 will implement actual handoff
         return new ChatResponse
         {
-            Message = "I'm connecting you with a customer service representative. " +
-                     "Please hold while I prepare a summary of our conversation.",
-            Category = QuestionCategory.HumanRequested,
-            RequiredAction = RequiredAction.HumanHandoffInitiated
+            Message = "Service requests like payment arrangements require speaking with a representative. " +
+                     "Please call our customer service line at 1-800-XXX-XXXX.",
+            Category = QuestionCategory.ServiceRequest,
+            RequiredAction = RequiredAction.HumanHandoffNeeded
         };
     }
 
-    // ========== Session Management Helpers ==========
+    private static ChatResponse CreateHumanRequestedResponse()
+    {
+        // Stage 6 will implement actual handoff
+        return new ChatResponse
+        {
+            Message = "I understand you'd like to speak with a representative. " +
+                     "Please call our customer service line at 1-800-XXX-XXXX.",
+            Category = QuestionCategory.HumanRequested,
+            RequiredAction = RequiredAction.HumanHandoffNeeded
+        };
+    }
 
-    /// <summary>
-    /// Gets session from cache or persistent store, creating new if not found.
-    /// </summary>
+    private static ChatResponse CreateErrorResponse(string message)
+    {
+        return new ChatResponse
+        {
+            Message = message,
+            Category = QuestionCategory.OutOfScope,
+            RequiredAction = RequiredAction.None
+        };
+    }
+
+    // ========== Session Management ==========
+
     private async Task<ChatSession> GetOrCreateSessionAsync(
         string sessionId,
         CancellationToken cancellationToken)
@@ -389,9 +413,6 @@ public class ChatbotOrchestrator
         return newSession;
     }
 
-    /// <summary>
-    /// Persists session to store (call periodically or on important state changes).
-    /// </summary>
     public async Task SaveSessionAsync(string sessionId, CancellationToken cancellationToken = default)
     {
         if (_sessionCache.TryGetValue(sessionId, out var session))
@@ -400,80 +421,179 @@ public class ChatbotOrchestrator
         }
     }
 
-    /// <summary>
-    /// Gets session from cache (for read-only access).
-    /// </summary>
     public ChatSession? GetSession(string sessionId)
     {
         _sessionCache.TryGetValue(sessionId, out var session);
         return session;
     }
 }
+```
 
-// Response models
-public class ChatResponse
-{
-    public string Message { get; set; } = string.Empty;
-    public QuestionCategory Category { get; set; }
-    public RequiredAction RequiredAction { get; set; }
-    public string? PendingQuery { get; set; }
-}
+### Session Models
 
-public enum RequiredAction
-{
-    None,
-    AuthenticationRequired,
-    AuthenticationInProgress,  // Multi-turn auth flow active - route next message to auth agent
-    HumanHandoffInitiated,
-    ClarificationNeeded,
-    HumanConversationActive,   // Human agent has joined and is actively chatting
-    TransferInProgress,        // Being transferred to specialist
-    CallbackScheduled          // Callback has been scheduled
-}
+```csharp
+// src/Orchestration/ChatSession.cs
 
-// Session storage
 public class ChatSession
 {
     public string SessionId { get; set; } = string.Empty;
     public UserSessionContext UserContext { get; set; } = new();
     public List<ConversationMessage> ConversationHistory { get; set; } = [];
-    public AgentSession? ClassifierSession { get; set; }
-    public AgentSession? FAQSession { get; set; }
-    public AgentSession? AuthAgentSession { get; set; } // For multi-turn in-band auth flow
-    public AgentSession? DataSession { get; set; }
+    public AuthSession? AuthSession { get; set; }  // For multi-turn auth flow
     public string? PendingQuery { get; set; }
+    // Note: UtilityDataSession is NOT stored - recreated each query from AuthSession
+}
+
+// src/Orchestration/UserSessionContext.cs
+
+public class UserSessionContext
+{
+    public string SessionId { get; set; } = string.Empty;
+    public AuthenticationState AuthState { get; set; } = AuthenticationState.Anonymous;
+    public string? CustomerId { get; set; }
+    public string? CustomerName { get; set; }
+    public DateTimeOffset? SessionExpiry { get; set; }
+    public DateTimeOffset LastInteraction { get; set; } = DateTimeOffset.UtcNow;
+}
+
+// src/Orchestration/OrchestratorModels.cs
+
+public class ChatResponse
+{
+    public string Message { get; set; } = string.Empty;
+    public QuestionCategory Category { get; set; }
+    public RequiredAction RequiredAction { get; set; }
+}
+
+public class ConversationMessage
+{
+    public string Role { get; set; } = string.Empty;  // "user" or "assistant"
+    public string Content { get; set; } = string.Empty;
+    public DateTimeOffset Timestamp { get; set; }
+}
+
+public enum RequiredAction
+{
+    None,
+    AuthenticationInProgress,
+    AuthenticationFailed,
+    HumanHandoffNeeded,
+    ClarificationNeeded
 }
 ```
 
-### Conversation Context Provider
+### Session Store Interface
 
 ```csharp
-/// <summary>
-/// Provides conversation history context to agents
-/// </summary>
-public class ConversationContextProvider : AIContextProvider
-{
-    private readonly List<ConversationMessage> _history;
+// src/Orchestration/ISessionStore.cs
 
-    public ConversationContextProvider(List<ConversationMessage> history)
+public interface ISessionStore
+{
+    Task<ChatSession?> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default);
+    Task SaveSessionAsync(ChatSession session, CancellationToken cancellationToken = default);
+    Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default);
+}
+
+// src/Orchestration/InMemorySessionStore.cs
+
+public class InMemorySessionStore : ISessionStore
+{
+    private readonly ConcurrentDictionary<string, ChatSession> _sessions = new();
+
+    public Task<ChatSession?> GetSessionAsync(string sessionId, CancellationToken cancellationToken = default)
     {
-        _history = history;
+        _sessions.TryGetValue(sessionId, out var session);
+        return Task.FromResult(session);
     }
 
-    public override ValueTask<AIContext> InvokingAsync(
-        InvokingContext context,
-        CancellationToken cancellationToken = default)
+    public Task SaveSessionAsync(ChatSession session, CancellationToken cancellationToken = default)
     {
-        // Provide conversation summary to agent
-        var recentHistory = _history.TakeLast(5);
-        var summary = string.Join("\n", recentHistory.Select(m =>
-            $"{m.Role}: {m.Content}"));
+        _sessions[session.SessionId] = session;
+        return Task.CompletedTask;
+    }
 
-        return new ValueTask<AIContext>(new AIContext
+    public Task DeleteSessionAsync(string sessionId, CancellationToken cancellationToken = default)
+    {
+        _sessions.TryRemove(sessionId, out _);
+        return Task.CompletedTask;
+    }
+}
+```
+
+### DI Registration
+
+```csharp
+// src/Orchestration/OrchestrationExtensions.cs
+
+public static class OrchestrationExtensions
+{
+    public static IServiceCollection AddOrchestration(this IServiceCollection services)
+    {
+        services.AddSingleton<ISessionStore, InMemorySessionStore>();
+        services.AddSingleton<ChatbotOrchestrator>();
+        return services;
+    }
+}
+
+// Update src/Infrastructure/ServiceCollectionExtensions.cs:
+// Add: services.AddOrchestration();
+```
+
+### Refactored ChatbotService
+
+```csharp
+// src/Infrastructure/ChatbotService.cs (refactored)
+
+public class ChatbotService : BackgroundService
+{
+    private readonly ChatbotOrchestrator _orchestrator;
+    private readonly ILogger<ChatbotService> _logger;
+    private readonly string _sessionId = Guid.NewGuid().ToString();
+
+    public ChatbotService(
+        ChatbotOrchestrator orchestrator,
+        ILogger<ChatbotService> logger)
+    {
+        _orchestrator = orchestrator;
+        _logger = logger;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        Console.WriteLine("=== Utility Billing Customer Support ===");
+        Console.WriteLine("Type 'quit' to exit.");
+        Console.WriteLine();
+
+        while (!stoppingToken.IsCancellationRequested)
         {
-            Messages = [new ChatMessage(ChatRole.System,
-                $"[Recent conversation history for context:\n{summary}]")]
-        });
+            Console.Write("> ");
+            var input = Console.ReadLine()?.Trim();
+
+            if (string.IsNullOrEmpty(input))
+                continue;
+
+            if (input.Equals("quit", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("Goodbye!");
+                break;
+            }
+
+            try
+            {
+                var response = await _orchestrator.ProcessMessageAsync(
+                    _sessionId, input, stoppingToken);
+
+                Console.WriteLine();
+                Console.WriteLine($"Assistant: {response.Message}");
+                Console.WriteLine($"  [Category: {response.Category}, Action: {response.RequiredAction}]");
+                Console.WriteLine();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error processing message");
+                Console.WriteLine($"Error: {ex.Message}");
+            }
+        }
     }
 }
 ```
@@ -481,151 +601,115 @@ public class ConversationContextProvider : AIContextProvider
 ### Testing Stage 5
 
 ```csharp
-public class OrchestratorTests
+[Collection("Sequential")]
+public class OrchestratorTests : IAsyncLifetime
 {
+    private IHost _host = null!;
+    private ChatbotOrchestrator _orchestrator = null!;
+
+    public Task InitializeAsync()
+    {
+        var builder = Host.CreateApplicationBuilder();
+        builder.Configuration.SetBasePath(AppContext.BaseDirectory);
+        builder.Configuration.AddJsonFile("appsettings.json", optional: false);
+        builder.Configuration.AddEnvironmentVariables();
+
+        builder.Services.AddUtilityBillingChatbot(builder.Configuration);
+
+        _host = builder.Build();
+        _orchestrator = _host.Services.GetRequiredService<ChatbotOrchestrator>();
+
+        return Task.CompletedTask;
+    }
+
+    public Task DisposeAsync()
+    {
+        _host.Dispose();
+        return Task.CompletedTask;
+    }
+
     [Fact]
     public async Task Orchestrator_RoutesBillingFAQ_ToFAQAgent()
     {
-        // Arrange - Q6: What are my payment options?
-        var orchestrator = CreateOrchestrator();
         var sessionId = Guid.NewGuid().ToString();
+        var response = await _orchestrator.ProcessMessageAsync(
+            sessionId, "What are my payment options?");
 
-        // Act
-        var response = await orchestrator.ProcessMessageAsync(
-            sessionId,
-            "What are my payment options?");
-
-        // Assert
         Assert.Equal(QuestionCategory.BillingFAQ, response.Category);
-        Assert.Contains("online", response.Message.ToLower());
+        Assert.Contains("online", response.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Orchestrator_RequiresAuth_ForAccountData()
+    public async Task Orchestrator_InitiatesAuth_ForAccountData()
     {
-        // Arrange - Q2: What is my balance?
-        var orchestrator = CreateOrchestrator();
         var sessionId = Guid.NewGuid().ToString();
+        var response = await _orchestrator.ProcessMessageAsync(
+            sessionId, "What is my current balance?");
 
-        // Act
-        var response = await orchestrator.ProcessMessageAsync(
-            sessionId,
-            "What is my current balance?");
-
-        // Assert
-        Assert.Equal(RequiredAction.AuthenticationRequired, response.RequiredAction);
-        Assert.Contains("verify", response.Message.ToLower());
-    }
-
-    [Fact]
-    public async Task Orchestrator_ProcessesAccountData_WhenAuthenticated()
-    {
-        // Arrange
-        var orchestrator = CreateOrchestrator();
-        var sessionId = Guid.NewGuid().ToString();
-
-        // First, authenticate via in-band flow
-        await orchestrator.CompleteAuthenticationAsync(
-            sessionId,
-            accountNumber: "ACC-2024-0042",
-            customerName: "Maria Garcia",
-            tokenExpiry: DateTimeOffset.UtcNow.AddMinutes(30));
-
-        // Act - Q1: Why is my bill so high?
-        var response = await orchestrator.ProcessMessageAsync(
-            sessionId,
-            "Why is my bill so high this month?");
-
-        // Assert
         Assert.Equal(QuestionCategory.AccountData, response.Category);
-        Assert.Equal(RequiredAction.None, response.RequiredAction);
+        Assert.Equal(RequiredAction.AuthenticationInProgress, response.RequiredAction);
     }
 
     [Fact]
-    public async Task Orchestrator_MaintainsSession_AcrossMessages()
+    public async Task Orchestrator_CompletesAuthFlow_AndAnswersQuery()
     {
-        // Arrange
-        var orchestrator = CreateOrchestrator();
         var sessionId = Guid.NewGuid().ToString();
 
-        // Act - Multi-turn conversation about assistance programs
-        await orchestrator.ProcessMessageAsync(sessionId, "Hi there");
-        await orchestrator.ProcessMessageAsync(sessionId, "Do you have any assistance programs?");
-        var response = await orchestrator.ProcessMessageAsync(sessionId, "How do I apply?");
+        // Initial query triggers auth
+        var r1 = await _orchestrator.ProcessMessageAsync(sessionId, "What is my balance?");
+        Assert.Equal(RequiredAction.AuthenticationInProgress, r1.RequiredAction);
 
-        // Assert - should understand context from previous message (Q7: LIHEAP)
-        Assert.Contains("LIHEAP", response.Message);
+        // Provide phone number
+        var r2 = await _orchestrator.ProcessMessageAsync(sessionId, "555-1234");
+        Assert.Equal(RequiredAction.AuthenticationInProgress, r2.RequiredAction);
+
+        // Provide SSN last 4
+        var r3 = await _orchestrator.ProcessMessageAsync(sessionId, "1234");
+
+        // Should be authenticated and have answered the balance query
+        Assert.Equal(RequiredAction.None, r3.RequiredAction);
+        Assert.Contains("187", r3.Message);  // John Smith's balance
     }
 
     [Fact]
-    public async Task Orchestrator_InitiatesHandoff_ForHumanRequest()
+    public async Task Orchestrator_HandlesOutOfScope()
     {
-        // Arrange
-        var orchestrator = CreateOrchestrator();
         var sessionId = Guid.NewGuid().ToString();
+        var response = await _orchestrator.ProcessMessageAsync(
+            sessionId, "What's the weather like today?");
 
-        // Act
-        var response = await orchestrator.ProcessMessageAsync(
-            sessionId,
-            "I need to speak with a customer service representative");
-
-        // Assert
-        Assert.Equal(RequiredAction.HumanHandoffInitiated, response.RequiredAction);
-    }
-
-    [Fact]
-    public async Task Orchestrator_ResumesQuery_AfterAuthentication()
-    {
-        // Arrange
-        var orchestrator = CreateOrchestrator();
-        var sessionId = Guid.NewGuid().ToString();
-
-        // Try to access account data (triggers auth required)
-        var authRequired = await orchestrator.ProcessMessageAsync(
-            sessionId,
-            "What is my current balance?");
-        Assert.Equal(RequiredAction.AuthenticationRequired, authRequired.RequiredAction);
-
-        // Complete authentication via in-band flow
-        var afterAuth = await orchestrator.CompleteAuthenticationAsync(
-            sessionId,
-            accountNumber: "ACC-2024-0042",
-            customerName: "Maria Garcia",
-            tokenExpiry: DateTimeOffset.UtcNow.AddMinutes(30));
-
-        // Assert - should have automatically processed pending query
-        Assert.Contains("balance", afterAuth.Message.ToLower());
-    }
-
-    [Fact]
-    public async Task Orchestrator_RoutesServiceRequest_ToHandoff()
-    {
-        // Arrange - Q17: Can I set up a payment arrangement?
-        var orchestrator = CreateOrchestrator();
-        var sessionId = Guid.NewGuid().ToString();
-
-        // Act
-        var response = await orchestrator.ProcessMessageAsync(
-            sessionId,
-            "I need to set up a payment arrangement");
-
-        // Assert
-        Assert.Equal(QuestionCategory.ServiceRequest, response.Category);
-        Assert.Equal(RequiredAction.HumanHandoffInitiated, response.RequiredAction);
+        Assert.Equal(QuestionCategory.OutOfScope, response.Category);
     }
 }
 ```
 
+### Implementation Order
+
+1. Create `src/Orchestration/` directory
+2. Create `OrchestratorModels.cs` (ChatResponse, ConversationMessage, RequiredAction)
+3. Create `UserSessionContext.cs`
+4. Create `ChatSession.cs`
+5. Create `ISessionStore.cs`
+6. Create `InMemorySessionStore.cs`
+7. Create `ChatbotOrchestrator.cs`
+8. Create `OrchestrationExtensions.cs`
+9. Update `ServiceCollectionExtensions.cs` to call `AddOrchestration()`
+10. Refactor `ChatbotService.cs` to use orchestrator
+11. Build and verify: `dotnet build`
+12. Create `tests/OrchestratorTests.cs`
+13. Run tests: `dotnet test --filter "FullyQualifiedName~OrchestratorTests"`
+
 ### Validation Checklist - Stage 5
 - [ ] Orchestrator correctly routes BillingFAQ questions to FAQ agent
 - [ ] Orchestrator correctly routes AccountData questions to auth flow
-- [ ] Orchestrator correctly routes ServiceRequest questions to handoff
-- [ ] Orchestrator prompts for authentication when needed
+- [ ] Orchestrator correctly routes ServiceRequest questions (placeholder response)
+- [ ] Orchestrator initiates authentication when needed
 - [ ] Orchestrator resumes pending query after successful authentication
-- [ ] Orchestrator handles authentication expiry gracefully
-- [ ] Orchestrator maintains conversation context across messages
-- [ ] Orchestrator initiates handoff for human requests
-- [ ] Orchestrator handles errors gracefully with fallback to human handoff
-- [ ] Session data persists correctly across the conversation
+- [ ] Orchestrator handles authentication lockout
+- [ ] Orchestrator maintains conversation history
+- [ ] Orchestrator handles out-of-scope questions
+- [ ] Orchestrator returns simple error messages on failure
+- [ ] Session persists across messages within same session ID
+- [ ] ChatbotService works as thin console wrapper
 
 ---
