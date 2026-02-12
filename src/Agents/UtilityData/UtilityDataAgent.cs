@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
 
+using System.Text.Json.Serialization;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -58,16 +59,17 @@ public class UtilityDataAgent
         _logger.LogDebug("UtilityData query for {Customer}: {Input}",
             session.Provider.CustomerName, input);
 
-        var response = await session.Agent.RunAsync(
+        var response = await session.Agent.RunAsync<UtilityDataStructuredOutput>(
             message: input,
-            session: session.AgentSession,
-            cancellationToken: cancellationToken);
+            session: session.AgentSession);
 
-        _logger.LogInformation("UtilityData response for {Customer} ({Account})",
-            session.Provider.CustomerName, session.Provider.AccountNumber);
+        var output = response.Result;
+        _logger.LogInformation("UtilityData response (FoundAnswer={FoundAnswer}) for {Customer} ({Account})",
+            output?.FoundAnswer ?? false, session.Provider.CustomerName, session.Provider.AccountNumber);
 
         return new UtilityDataResponse(
-            Text: response.Text ?? string.Empty,
+            Text: output?.Response ?? response.Text ?? string.Empty,
+            FoundAnswer: output?.FoundAnswer ?? false,
             Session: session,
             CustomerName: session.Provider.CustomerName,
             AccountNumber: session.Provider.AccountNumber);
@@ -102,6 +104,10 @@ public class UtilityDataAgent
         var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
         {
             Name = "UtilityDataAgent",
+            ChatOptions = new ChatOptions
+            {
+                ResponseFormat = ChatResponseFormat.ForJsonSchema<UtilityDataStructuredOutput>()
+            },
             AIContextProviderFactory = (ctx, ct) =>
                 new ValueTask<AIContextProvider>(provider)
         });
@@ -119,7 +125,7 @@ public class UtilityDataAgent
 /// Holds the agent, session, and provider for a utility data query session.
 /// </summary>
 public record UtilityDataSession(
-    AIAgent Agent,
+    ChatClientAgent Agent,
     AgentSession AgentSession,
     UtilityDataContextProvider Provider);
 
@@ -128,9 +134,24 @@ public record UtilityDataSession(
 /// </summary>
 public record UtilityDataResponse(
     string Text,
+    bool FoundAnswer,
     UtilityDataSession Session,
     string CustomerName,
     string AccountNumber);
+
+/// <summary>
+/// Structured output from the utility data agent for JSON schema validation.
+/// </summary>
+public class UtilityDataStructuredOutput
+{
+    /// <summary>Whether the agent could answer the question using available tools.</summary>
+    [JsonPropertyName("foundAnswer")]
+    public bool FoundAnswer { get; set; }
+
+    /// <summary>The response text to show the user.</summary>
+    [JsonPropertyName("response")]
+    public string Response { get; set; } = string.Empty;
+}
 
 /// <summary>
 /// Extension methods for registering the UtilityDataAgent.

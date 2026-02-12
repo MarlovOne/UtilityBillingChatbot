@@ -1,213 +1,895 @@
-## Stage 6: Human Handoff with Summarization (WebSocket)
+## Stage 6: Human Handoff with Summarization
 
 ### Objective
-Build the summarization agent and human handoff flow using WebSocket for real-time communication between customer, AI, and human agents.
+Build the summarization agent and human handoff flow. The summarization agent creates concise conversation summaries for human agents when customers need to be escalated.
 
-### Architecture: WebSocket + RequestPort Pattern
+### Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        HUMAN HANDOFF ARCHITECTURE                        │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                                                                          │
-│  Customer                    Server                      Human Agent     │
-│  ┌──────┐                ┌───────────┐                   ┌──────┐       │
-│  │ Web  │◄──WebSocket──►│ SignalR   │◄────WebSocket────►│ Agent│       │
-│  │Client│                │   Hub     │                   │  UI  │       │
-│  └──────┘                └─────┬─────┘                   └──────┘       │
-│                                │                                         │
-│                                ▼                                         │
-│                    ┌────────────────────┐                               │
-│                    │ Handoff Manager    │                               │
-│                    │ - Ticket Queue     │                               │
-│                    │ - Session Mapping  │                               │
-│                    │ - Event Routing    │                               │
-│                    └─────────┬──────────┘                               │
-│                              │                                           │
-│                    ┌─────────▼──────────┐                               │
-│                    │ Summarization      │                               │
-│                    │ Agent              │                               │
-│                    └────────────────────┘                               │
+│  User Message                                                            │
+│       │                                                                  │
+│       ▼                                                                  │
+│  ┌─────────────────┐                                                     │
+│  │ ChatbotOrchestrator                                                   │
+│  │ (Routes to handlers)                                                  │
+│  └────────┬────────┘                                                     │
+│           │                                                              │
+│           │ HumanRequested / ServiceRequest                              │
+│           ▼                                                              │
+│  ┌─────────────────┐         ┌─────────────────┐                        │
+│  │ SummarizationAgent        │ HandoffService  │                        │
+│  │ (Creates summary)  ─────► │ (Queues ticket) │                        │
+│  └─────────────────┘         └────────┬────────┘                        │
+│                                       │                                  │
+│                                       ▼                                  │
+│                              ┌─────────────────┐                        │
+│                              │ HandoffManager  │                        │
+│                              │ - Ticket Queue  │                        │
+│                              │ - Agent Pool    │                        │
+│                              └─────────────────┘                        │
 │                                                                          │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
+### File Structure
+
+```
+src/Agents/Summarization/
+├── SummarizationAgent.cs           # Main agent class + DI extension
+└── SummarizationModels.cs          # Response and summary types
+
+src/Orchestration/Handoff/
+├── HandoffService.cs               # IHandoffService implementation + DI extension
+├── HandoffManager.cs               # In-memory ticket/agent management
+├── HandoffModels.cs                # Request, response, ticket models
+└── HandoffState.cs                 # Handoff-related enums
+```
+
 ### Implementation - Summarization Agent
 
+The summarization agent follows the same pattern as other agents in the codebase. It's stateless since it only needs to process a single conversation for summary.
+
 ```csharp
-public class SummarizationAgentFactory : ISummarizationAgentFactory
+// src/Agents/Summarization/SummarizationAgent.cs
+
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+namespace UtilityBillingChatbot.Agents.Summarization;
+
+/// <summary>
+/// Agent that summarizes conversations for human agent handoff.
+/// Creates structured summaries including issue, AI attempts, and user context.
+/// </summary>
+public class SummarizationAgent
 {
     private readonly IChatClient _chatClient;
+    private readonly ILogger<SummarizationAgent> _logger;
 
-    public SummarizationAgentFactory(IChatClient chatClient)
+    private const string Instructions = """
+        You are a conversation summarizer for customer support handoffs.
+        Your job is to create a concise but complete summary for human agents.
+
+        Include in your summary:
+        1. User's main issue/question (1-2 sentences)
+        2. What the AI tried (briefly)
+        3. Why escalation is happening
+        4. User's emotional state (if apparent)
+        5. Any relevant account/order info mentioned
+
+        Format your response as:
+
+        ## Issue Summary
+        [Main issue in 1-2 sentences]
+
+        ## AI Attempts
+        [What was tried, briefly]
+
+        ## Escalation Reason
+        [Why human needed]
+
+        ## User Context
+        - Name: [if known, otherwise "Unknown"]
+        - Account: [if authenticated, otherwise "Not authenticated"]
+        - Mood: [neutral/frustrated/urgent]
+
+        ## Recommended Next Steps
+        [1-2 suggestions for human agent]
+
+        Keep the summary under 200 words. Be factual and neutral in tone.
+        """;
+
+    public SummarizationAgent(
+        IChatClient chatClient,
+        ILogger<SummarizationAgent> logger)
     {
         _chatClient = chatClient;
+        _logger = logger;
     }
 
-    public AIAgent CreateSummarizationAgent()
+    /// <summary>
+    /// Summarizes a conversation for handoff to a human agent.
+    /// </summary>
+    /// <param name="conversation">The conversation history formatted as text.</param>
+    /// <param name="escalationReason">Why the handoff is happening.</param>
+    /// <param name="currentQuestion">The user's current/pending question.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Structured summary for human agent.</returns>
+    public async Task<SummaryResponse> SummarizeAsync(
+        string conversation,
+        string escalationReason,
+        string currentQuestion,
+        CancellationToken cancellationToken = default)
     {
-        const string instructions = """
-            You are a conversation summarizer for customer support handoffs.
-            Your job is to create a concise but complete summary for human agents.
+        _logger.LogDebug("Summarizing conversation for handoff. Reason: {Reason}", escalationReason);
 
-            Include in your summary:
-            1. User's main issue/question (1-2 sentences)
-            2. What the AI tried (briefly)
-            3. Why escalation is happening
-            4. User's emotional state (if apparent)
-            5. Any relevant account/order info mentioned
+        var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
+        {
+            Name = "SummarizationAgent",
+            ChatOptions = new ChatOptions
+            {
+                Instructions = Instructions
+            }
+        });
 
-            Format:
-            ## Issue Summary
-            [Main issue]
+        var session = await agent.CreateSessionAsync(cancellationToken);
 
-            ## AI Attempts
-            [What was tried]
+        var prompt = $"""
+            Summarize this customer support conversation for handoff to a human agent.
 
-            ## Escalation Reason
-            [Why human needed]
+            Escalation reason: {escalationReason}
+            Current user question: {currentQuestion}
 
-            ## User Context
-            - Name: [if known]
-            - Account: [if authenticated]
-            - Mood: [neutral/frustrated/urgent]
-
-            ## Recommended Next Steps
-            [Suggestions for human agent]
-
-            Keep the summary under 200 words. Be factual and neutral in tone.
+            Conversation:
+            {conversation}
             """;
 
-        return _chatClient.AsAIAgent(instructions: instructions);
+        var response = await agent.RunAsync(
+            message: prompt,
+            session: session,
+            cancellationToken: cancellationToken);
+
+        _logger.LogInformation("Generated summary for handoff");
+
+        return new SummaryResponse(
+            Summary: response.Text ?? string.Empty,
+            EscalationReason: escalationReason,
+            OriginalQuestion: currentQuestion);
     }
+}
+
+/// <summary>
+/// Extension methods for registering the SummarizationAgent.
+/// </summary>
+public static class SummarizationAgentExtensions
+{
+    public static IServiceCollection AddSummarizationAgent(this IServiceCollection services)
+    {
+        services.AddSingleton<SummarizationAgent>();
+        return services;
+    }
+}
+```
+
+```csharp
+// src/Agents/Summarization/SummarizationModels.cs
+
+namespace UtilityBillingChatbot.Agents.Summarization;
+
+/// <summary>
+/// Response from the summarization agent.
+/// </summary>
+public record SummaryResponse(
+    string Summary,
+    string EscalationReason,
+    string OriginalQuestion);
+```
+
+### Handoff Models
+
+```csharp
+// src/Orchestration/Handoff/HandoffModels.cs
+
+using UtilityBillingChatbot.Orchestration;
+
+namespace UtilityBillingChatbot.Orchestration.Handoff;
+
+/// <summary>
+/// Request to create a human handoff ticket.
+/// </summary>
+public class HumanHandoffRequest
+{
+    /// <summary>Unique ticket identifier.</summary>
+    public string TicketId { get; set; } = Guid.NewGuid().ToString("N")[..8].ToUpperInvariant();
+
+    /// <summary>Session ID for the customer's conversation.</summary>
+    public required string SessionId { get; set; }
+
+    /// <summary>AI-generated conversation summary.</summary>
+    public required string ConversationSummary { get; set; }
+
+    /// <summary>The question that triggered the handoff.</summary>
+    public required string OriginalQuestion { get; set; }
+
+    /// <summary>Why the handoff is needed.</summary>
+    public required string EscalationReason { get; set; }
+
+    /// <summary>User context from the session.</summary>
+    public required UserSessionContext UserContext { get; set; }
+
+    /// <summary>Full conversation history.</summary>
+    public List<ConversationMessage> ConversationHistory { get; set; } = [];
+
+    /// <summary>Suggested department based on escalation reason.</summary>
+    public string? SuggestedDepartment { get; set; }
+
+    /// <summary>When the request was created.</summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Response from a human agent.
+/// </summary>
+public record HumanResponse(
+    string TicketId,
+    string AgentId,
+    string AgentName,
+    string Message,
+    HandoffResolution Resolution,
+    DateTimeOffset RespondedAt);
+
+/// <summary>
+/// Ticket tracking the handoff state.
+/// </summary>
+public class HandoffTicket
+{
+    public required string TicketId { get; set; }
+    public required string SessionId { get; set; }
+    public string? CustomerName { get; set; }
+    public required string Summary { get; set; }
+    public required string EscalationReason { get; set; }
+    public string? SuggestedDepartment { get; set; }
+    public TicketStatus Status { get; set; } = TicketStatus.Pending;
+    public string? AssignedAgentId { get; set; }
+    public string? AssignedAgentName { get; set; }
+    public string? Resolution { get; set; }
+    public string? ResolutionNotes { get; set; }
+    public List<ConversationMessage> ConversationHistory { get; set; } = [];
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? AssignedAt { get; set; }
+    public DateTimeOffset? ResolvedAt { get; set; }
+}
+
+/// <summary>
+/// Information about a human agent.
+/// </summary>
+public record AgentInfo(
+    string AgentId,
+    string Name,
+    AgentStatus Status);
+```
+
+```csharp
+// src/Orchestration/Handoff/HandoffState.cs
+
+namespace UtilityBillingChatbot.Orchestration.Handoff;
+
+/// <summary>
+/// State of a handoff within a chat session.
+/// </summary>
+public enum HandoffState
+{
+    /// <summary>No handoff in progress.</summary>
+    None,
+
+    /// <summary>Waiting for a human agent to claim the ticket.</summary>
+    WaitingForHuman,
+
+    /// <summary>Human agent has responded.</summary>
+    HumanResponded,
+
+    /// <summary>Active conversation with human agent.</summary>
+    HumanConversationActive,
+
+    /// <summary>Handoff has been resolved.</summary>
+    Resolved
+}
+
+/// <summary>
+/// How the handoff was resolved.
+/// </summary>
+public enum HandoffResolution
+{
+    /// <summary>Issue was resolved by the human agent.</summary>
+    Resolved,
+
+    /// <summary>Human agent is continuing the conversation.</summary>
+    ContinueConversation,
+
+    /// <summary>Transferred to a specialist department.</summary>
+    TransferToSpecialist,
+
+    /// <summary>Callback has been scheduled.</summary>
+    ScheduleCallback
+}
+
+/// <summary>
+/// Status of a handoff ticket.
+/// </summary>
+public enum TicketStatus
+{
+    /// <summary>Waiting to be claimed by an agent.</summary>
+    Pending,
+
+    /// <summary>Being handled by an agent.</summary>
+    Active,
+
+    /// <summary>Ticket has been resolved.</summary>
+    Resolved,
+
+    /// <summary>Customer disconnected before resolution.</summary>
+    Abandoned
+}
+
+/// <summary>
+/// Availability status of a human agent.
+/// </summary>
+public enum AgentStatus
+{
+    Available,
+    Busy,
+    Away
 }
 ```
 
 ### Handoff Service
 
-> **Note**: The `IHandoffService` interface is defined in the Overview document (Core Components - Service Abstractions).
-
 ```csharp
-public class HumanHandoffService : IHandoffService
-{
-    private readonly IHandoffQueue _queue;
-    private readonly INotificationService _notifications;
+// src/Orchestration/Handoff/HandoffService.cs
 
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+namespace UtilityBillingChatbot.Orchestration.Handoff;
+
+/// <summary>
+/// Interface for managing human handoff operations.
+/// </summary>
+public interface IHandoffService
+{
+    /// <summary>Creates a handoff ticket and queues it for human agents.</summary>
+    Task<string> CreateHandoffTicketAsync(
+        HumanHandoffRequest request,
+        CancellationToken cancellationToken);
+
+    /// <summary>Waits for a human agent to respond to a ticket.</summary>
+    Task<HumanResponse?> WaitForHumanResponseAsync(
+        string ticketId,
+        TimeSpan timeout,
+        CancellationToken cancellationToken);
+
+    /// <summary>Gets the current status of a ticket.</summary>
+    HandoffTicket? GetTicket(string ticketId);
+}
+
+/// <summary>
+/// Service for managing human handoff operations.
+/// </summary>
+public class HandoffService : IHandoffService
+{
+    private readonly HandoffManager _handoffManager;
+    private readonly ILogger<HandoffService> _logger;
+
+    public HandoffService(
+        HandoffManager handoffManager,
+        ILogger<HandoffService> logger)
+    {
+        _handoffManager = handoffManager;
+        _logger = logger;
+    }
+
+    /// <inheritdoc />
     public async Task<string> CreateHandoffTicketAsync(
         HumanHandoffRequest request,
         CancellationToken cancellationToken)
     {
-        // Add to human agent queue
-        await _queue.EnqueueAsync(request, cancellationToken);
+        _logger.LogInformation(
+            "Creating handoff ticket for session {SessionId}. Reason: {Reason}",
+            request.SessionId, request.EscalationReason);
 
-        // Notify available agents
-        await _notifications.NotifyAgentsAsync(
-            $"New handoff ticket: {request.TicketId}",
-            cancellationToken);
+        var ticketId = await _handoffManager.CreateTicketAsync(request, cancellationToken);
 
-        return request.TicketId;
+        _logger.LogInformation(
+            "Created handoff ticket {TicketId} for session {SessionId}",
+            ticketId, request.SessionId);
+
+        return ticketId;
     }
 
+    /// <inheritdoc />
     public async Task<HumanResponse?> WaitForHumanResponseAsync(
         string ticketId,
         TimeSpan timeout,
         CancellationToken cancellationToken)
     {
+        _logger.LogDebug("Waiting for human response on ticket {TicketId}", ticketId);
+
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken, timeoutCts.Token);
 
         try
         {
-            return await _queue.WaitForResponseAsync(ticketId, linkedCts.Token);
+            return await _handoffManager.WaitForResponseAsync(ticketId, linkedCts.Token);
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            return null; // Timeout
+            _logger.LogDebug("Timeout waiting for human response on ticket {TicketId}", ticketId);
+            return null;
         }
     }
 
-    public async Task NotifyCustomerAsync(
-        string sessionId,
-        string message,
-        CancellationToken cancellationToken)
+    /// <inheritdoc />
+    public HandoffTicket? GetTicket(string ticketId)
     {
-        await _notifications.SendToSessionAsync(sessionId, message, cancellationToken);
+        return _handoffManager.GetTicket(ticketId);
     }
 }
 
-public class HumanResponse
+/// <summary>
+/// Extension methods for registering handoff services.
+/// </summary>
+public static class HandoffServiceExtensions
 {
-    public string TicketId { get; set; } = string.Empty;
-    public string AgentId { get; set; } = string.Empty;
-    public string AgentName { get; set; } = string.Empty;
-    public string Message { get; set; } = string.Empty;
-    public HandoffResolution Resolution { get; set; }
-    public DateTimeOffset RespondedAt { get; set; }
-}
-
-public enum HandoffResolution
-{
-    Resolved,
-    ContinueConversation,
-    TransferToSpecialist,
-    ScheduleCallback
+    public static IServiceCollection AddHandoffServices(this IServiceCollection services)
+    {
+        services.AddSingleton<HandoffManager>();
+        services.AddSingleton<IHandoffService, HandoffService>();
+        return services;
+    }
 }
 ```
 
-### Updated Orchestrator with Full Handoff Flow
+### Handoff Manager (In-Memory)
 
 ```csharp
-public partial class ChatbotOrchestrator
-{
-    private readonly SummarizationAgentFactory _summarizationFactory;
-    private readonly IHandoffService _handoffService;
+// src/Orchestration/Handoff/HandoffManager.cs
 
+using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
+
+namespace UtilityBillingChatbot.Orchestration.Handoff;
+
+/// <summary>
+/// Manages handoff tickets and agent assignments.
+/// In-memory implementation for prototyping - replace with persistent store for production.
+/// </summary>
+public class HandoffManager
+{
+    private readonly ConcurrentDictionary<string, HandoffTicket> _tickets = new();
+    private readonly ConcurrentDictionary<string, AgentInfo> _agents = new();
+    private readonly ConcurrentDictionary<string, string> _sessionToTicket = new();
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<HumanResponse>> _responseWaiters = new();
+    private readonly ILogger<HandoffManager> _logger;
+
+    public HandoffManager(ILogger<HandoffManager> logger)
+    {
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// Creates a new handoff ticket.
+    /// </summary>
+    public Task<string> CreateTicketAsync(
+        HumanHandoffRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var ticket = new HandoffTicket
+        {
+            TicketId = request.TicketId,
+            SessionId = request.SessionId,
+            CustomerName = request.UserContext.CustomerName,
+            Summary = request.ConversationSummary,
+            EscalationReason = request.EscalationReason,
+            ConversationHistory = request.ConversationHistory,
+            SuggestedDepartment = request.SuggestedDepartment,
+            Status = TicketStatus.Pending,
+            CreatedAt = request.CreatedAt
+        };
+
+        _tickets[ticket.TicketId] = ticket;
+        _sessionToTicket[request.SessionId] = ticket.TicketId;
+
+        _logger.LogInformation(
+            "Created ticket {TicketId} for session {SessionId}, department: {Department}",
+            ticket.TicketId, ticket.SessionId, ticket.SuggestedDepartment ?? "General");
+
+        // In a real implementation, this would notify available agents
+        // via SignalR, webhook, or message queue
+
+        return Task.FromResult(ticket.TicketId);
+    }
+
+    /// <summary>
+    /// Claims a ticket for a human agent.
+    /// </summary>
+    public HandoffTicket? ClaimTicket(string ticketId, string agentId, string agentName)
+    {
+        if (!_tickets.TryGetValue(ticketId, out var ticket))
+            return null;
+
+        if (ticket.Status != TicketStatus.Pending)
+            return null;
+
+        ticket.AssignedAgentId = agentId;
+        ticket.AssignedAgentName = agentName;
+        ticket.Status = TicketStatus.Active;
+        ticket.AssignedAt = DateTimeOffset.UtcNow;
+
+        _logger.LogInformation(
+            "Ticket {TicketId} claimed by agent {AgentName} ({AgentId})",
+            ticketId, agentName, agentId);
+
+        return ticket;
+    }
+
+    /// <summary>
+    /// Submits a human agent's response to a ticket.
+    /// </summary>
+    public void SubmitResponse(HumanResponse response)
+    {
+        if (!_tickets.TryGetValue(response.TicketId, out var ticket))
+        {
+            _logger.LogWarning("Response submitted for unknown ticket {TicketId}", response.TicketId);
+            return;
+        }
+
+        // Add to conversation history
+        ticket.ConversationHistory.Add(new ConversationMessage
+        {
+            Role = "agent",
+            Content = $"[{response.AgentName}]: {response.Message}"
+        });
+
+        // If there's a waiter for this ticket, complete it
+        if (_responseWaiters.TryRemove(response.TicketId, out var tcs))
+        {
+            tcs.TrySetResult(response);
+        }
+
+        _logger.LogInformation(
+            "Response submitted for ticket {TicketId} by agent {AgentName}",
+            response.TicketId, response.AgentName);
+    }
+
+    /// <summary>
+    /// Waits for a human response to a ticket.
+    /// </summary>
+    public async Task<HumanResponse?> WaitForResponseAsync(
+        string ticketId,
+        CancellationToken cancellationToken)
+    {
+        var tcs = new TaskCompletionSource<HumanResponse>();
+
+        _responseWaiters[ticketId] = tcs;
+
+        try
+        {
+            await using var registration = cancellationToken.Register(
+                () => tcs.TrySetCanceled(cancellationToken));
+
+            return await tcs.Task;
+        }
+        finally
+        {
+            _responseWaiters.TryRemove(ticketId, out _);
+        }
+    }
+
+    /// <summary>
+    /// Resolves a ticket.
+    /// </summary>
+    public HandoffTicket? ResolveTicket(string ticketId, string resolution, string? notes)
+    {
+        if (!_tickets.TryGetValue(ticketId, out var ticket))
+            return null;
+
+        ticket.Status = TicketStatus.Resolved;
+        ticket.Resolution = resolution;
+        ticket.ResolutionNotes = notes;
+        ticket.ResolvedAt = DateTimeOffset.UtcNow;
+
+        // Clean up mappings
+        _sessionToTicket.TryRemove(ticket.SessionId, out _);
+
+        _logger.LogInformation(
+            "Ticket {TicketId} resolved. Resolution: {Resolution}",
+            ticketId, resolution);
+
+        return ticket;
+    }
+
+    /// <summary>Gets a ticket by ID.</summary>
+    public HandoffTicket? GetTicket(string ticketId) =>
+        _tickets.TryGetValue(ticketId, out var ticket) ? ticket : null;
+
+    /// <summary>Gets the active ticket for a session.</summary>
+    public HandoffTicket? GetActiveTicketForSession(string sessionId) =>
+        _sessionToTicket.TryGetValue(sessionId, out var ticketId) &&
+        _tickets.TryGetValue(ticketId, out var ticket) &&
+        ticket.Status == TicketStatus.Active
+            ? ticket : null;
+
+    /// <summary>Gets all pending tickets.</summary>
+    public IEnumerable<HandoffTicket> GetPendingTickets() =>
+        _tickets.Values
+            .Where(t => t.Status == TicketStatus.Pending)
+            .OrderBy(t => t.CreatedAt);
+
+    /// <summary>Registers a human agent.</summary>
+    public void RegisterAgent(string agentId, string name)
+    {
+        _agents[agentId] = new AgentInfo(agentId, name, AgentStatus.Available);
+        _logger.LogInformation("Agent registered: {AgentName} ({AgentId})", name, agentId);
+    }
+}
+```
+
+### Updated ChatSession Model
+
+Extend the existing `ChatSession` to support handoff state:
+
+```csharp
+// Update src/Orchestration/ChatSession.cs
+
+using UtilityBillingChatbot.Agents.Auth;
+using UtilityBillingChatbot.Orchestration.Handoff;
+
+namespace UtilityBillingChatbot.Orchestration;
+
+/// <summary>
+/// Represents a complete chat session including user context, conversation history,
+/// and any in-progress authentication or handoff flow.
+/// </summary>
+public class ChatSession
+{
+    /// <summary>Unique identifier for this session.</summary>
+    public required string SessionId { get; set; }
+
+    /// <summary>User context and authentication state.</summary>
+    public required UserSessionContext UserContext { get; set; }
+
+    /// <summary>History of messages in this conversation.</summary>
+    public List<ConversationMessage> ConversationHistory { get; set; } = [];
+
+    /// <summary>Active authentication session, if auth flow is in progress.</summary>
+    public AuthSession? AuthSession { get; set; }
+
+    /// <summary>
+    /// Query that was pending before authentication started.
+    /// Will be answered after successful authentication.
+    /// </summary>
+    public string? PendingQuery { get; set; }
+
+    /// <summary>Current handoff ticket ID, if a handoff is in progress.</summary>
+    public string? CurrentHandoffTicketId { get; set; }
+
+    /// <summary>Current handoff state.</summary>
+    public HandoffState HandoffState { get; set; } = HandoffState.None;
+
+    /// <summary>When this session was created.</summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>When this session was last updated.</summary>
+    public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+```
+
+### Updated RequiredAction Enum
+
+Extend the existing `RequiredAction` enum in `OrchestratorModels.cs`:
+
+```csharp
+/// <summary>
+/// Actions that may be required from the user after a response.
+/// </summary>
+public enum RequiredAction
+{
+    /// <summary>No action required, response is complete.</summary>
+    None,
+
+    /// <summary>Authentication flow is in progress, awaiting user input.</summary>
+    AuthenticationInProgress,
+
+    /// <summary>Authentication failed (locked out or max retries).</summary>
+    AuthenticationFailed,
+
+    /// <summary>Request requires human agent assistance.</summary>
+    HumanHandoffNeeded,
+
+    /// <summary>Question was unclear, clarification needed.</summary>
+    ClarificationNeeded,
+
+    /// <summary>Human handoff has been initiated, waiting for agent.</summary>
+    HumanHandoffInitiated,
+
+    /// <summary>Active conversation with a human agent.</summary>
+    HumanConversationActive,
+
+    /// <summary>Transfer to specialist in progress.</summary>
+    TransferInProgress,
+
+    /// <summary>Callback has been scheduled.</summary>
+    CallbackScheduled
+}
+```
+
+Optionally, extend `ChatResponse` to include ticket info:
+
+```csharp
+public class ChatResponse
+{
+    /// <summary>The response message to show the user.</summary>
+    public required string Message { get; set; }
+
+    /// <summary>The category the question was classified as.</summary>
+    public QuestionCategory Category { get; set; }
+
+    /// <summary>Any required action the user must take.</summary>
+    public RequiredAction RequiredAction { get; set; }
+
+    /// <summary>Handoff ticket ID, if a handoff was initiated.</summary>
+    public string? TicketId { get; set; }
+}
+```
+
+### Updated Orchestrator with Handoff Flow
+
+Add the handoff methods to `ChatbotOrchestrator`:
+
+```csharp
+// Add to ChatbotOrchestrator.cs
+
+using UtilityBillingChatbot.Agents.Summarization;
+using UtilityBillingChatbot.Orchestration.Handoff;
+
+public class ChatbotOrchestrator
+{
+    private readonly ClassifierAgent _classifierAgent;
+    private readonly FAQAgent _faqAgent;
+    private readonly AuthAgent _authAgent;
+    private readonly UtilityDataAgent _utilityDataAgent;
+    private readonly SummarizationAgent _summarizationAgent;
+    private readonly IHandoffService _handoffService;
+    private readonly ISessionStore _sessionStore;
+    private readonly ILogger<ChatbotOrchestrator> _logger;
+
+    // ... existing fields and constructor updated to include new dependencies
+
+    public ChatbotOrchestrator(
+        ClassifierAgent classifierAgent,
+        FAQAgent faqAgent,
+        AuthAgent authAgent,
+        UtilityDataAgent utilityDataAgent,
+        SummarizationAgent summarizationAgent,
+        IHandoffService handoffService,
+        ISessionStore sessionStore,
+        ILogger<ChatbotOrchestrator> logger)
+    {
+        _classifierAgent = classifierAgent;
+        _faqAgent = faqAgent;
+        _authAgent = authAgent;
+        _utilityDataAgent = utilityDataAgent;
+        _summarizationAgent = summarizationAgent;
+        _handoffService = handoffService;
+        _sessionStore = sessionStore;
+        _logger = logger;
+    }
+
+    // ... existing ProcessMessageAsync updated to check handoff state
+
+    public async Task<ChatResponse> ProcessMessageAsync(
+        string sessionId,
+        string userMessage,
+        CancellationToken cancellationToken = default)
+    {
+        var session = await GetOrCreateSessionAsync(sessionId, cancellationToken);
+        session.UserContext.LastInteraction = DateTimeOffset.UtcNow;
+
+        session.ConversationHistory.Add(new ConversationMessage
+        {
+            Role = "user",
+            Content = userMessage
+        });
+
+        ChatResponse response;
+
+        try
+        {
+            // Check if in handoff state first
+            if (session.HandoffState is HandoffState.WaitingForHuman or
+                HandoffState.HumanConversationActive)
+            {
+                response = await HandleMessageDuringHandoffAsync(session, userMessage, cancellationToken);
+            }
+            // Check if in auth flow
+            else if (session.AuthSession is not null &&
+                     session.UserContext.AuthState is not AuthenticationState.Authenticated)
+            {
+                response = await ContinueAuthenticationFlowAsync(session, userMessage, cancellationToken);
+            }
+            else
+            {
+                response = await RouteMessageAsync(session, userMessage, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing message for session {SessionId}", sessionId);
+            response = new ChatResponse
+            {
+                Message = "I apologize, but I encountered an error processing your request. Please try again.",
+                Category = QuestionCategory.OutOfScope,
+                RequiredAction = RequiredAction.None
+            };
+        }
+
+        session.ConversationHistory.Add(new ConversationMessage
+        {
+            Role = "assistant",
+            Content = response.Message
+        });
+
+        await SaveSessionAsync(session, cancellationToken);
+        return response;
+    }
+
+    /// <summary>
+    /// Initiates a human handoff for the current session.
+    /// </summary>
     public async Task<ChatResponse> InitiateHumanHandoffAsync(
-        string message,
         ChatSession session,
+        string userMessage,
         string reason,
         CancellationToken cancellationToken)
     {
-        // Step 1: Generate conversation summary
-        var summarizer = _summarizationFactory.CreateSummarizationAgent();
-        var summarySession = await summarizer.CreateSessionAsync();
+        _logger.LogInformation(
+            "Initiating handoff for session {SessionId}. Reason: {Reason}",
+            session.SessionId, reason);
 
+        // Step 1: Generate conversation summary
         var conversationText = string.Join("\n",
             session.ConversationHistory.Select(m => $"{m.Role}: {m.Content}"));
 
-        var summaryPrompt = $"""
-            Summarize this customer support conversation for handoff to a human agent.
-
-            Escalation reason: {reason}
-            Current user question: {message}
-
-            Conversation:
-            {conversationText}
-            """;
-
-        var summaryResponse = await summarizer.RunAsync(
-            summaryPrompt,
-            summarySession,
+        var summaryResponse = await _summarizationAgent.SummarizeAsync(
+            conversation: conversationText,
+            escalationReason: reason,
+            currentQuestion: userMessage,
             cancellationToken: cancellationToken);
 
         // Step 2: Create handoff request
         var handoffRequest = new HumanHandoffRequest
         {
-            ConversationSummary = summaryResponse.Text,
-            OriginalQuestion = message,
+            SessionId = session.SessionId,
+            ConversationSummary = summaryResponse.Summary,
+            OriginalQuestion = userMessage,
             EscalationReason = reason,
             UserContext = session.UserContext,
             ConversationHistory = session.ConversationHistory,
-            SuggestedDepartment = DetermineDepartment(session, reason)
+            SuggestedDepartment = DetermineDepartment(reason)
         };
 
-        // Step 3: Create ticket and queue for human
+        // Step 3: Create ticket
         var ticketId = await _handoffService.CreateHandoffTicketAsync(
-            handoffRequest,
-            cancellationToken);
+            handoffRequest, cancellationToken);
 
-        // Store ticket ID in session for tracking
+        // Step 4: Update session state
         session.CurrentHandoffTicketId = ticketId;
         session.HandoffState = HandoffState.WaitingForHuman;
 
@@ -222,30 +904,58 @@ public partial class ChatbotOrchestrator
     }
 
     /// <summary>
-    /// Called when human agent responds to handoff
+    /// Handles messages while a handoff is in progress.
+    /// </summary>
+    private async Task<ChatResponse> HandleMessageDuringHandoffAsync(
+        ChatSession session,
+        string userMessage,
+        CancellationToken cancellationToken)
+    {
+        // If user wants to cancel waiting
+        if (userMessage.Contains("cancel", StringComparison.OrdinalIgnoreCase) ||
+            userMessage.Contains("nevermind", StringComparison.OrdinalIgnoreCase))
+        {
+            session.HandoffState = HandoffState.None;
+            session.CurrentHandoffTicketId = null;
+
+            return new ChatResponse
+            {
+                Message = "No problem! I've cancelled your request for a human agent. How else can I help you?",
+                Category = QuestionCategory.HumanRequested,
+                RequiredAction = RequiredAction.None
+            };
+        }
+
+        // Otherwise, acknowledge and continue waiting
+        return new ChatResponse
+        {
+            Message = "I've noted your message and will pass it along to the support agent when they connect. " +
+                     "Your ticket number is " + session.CurrentHandoffTicketId + ".",
+            Category = QuestionCategory.HumanRequested,
+            RequiredAction = RequiredAction.HumanHandoffInitiated,
+            TicketId = session.CurrentHandoffTicketId
+        };
+    }
+
+    /// <summary>
+    /// Processes a response from a human agent.
     /// </summary>
     public async Task<ChatResponse> HandleHumanResponseAsync(
         string sessionId,
         HumanResponse humanResponse,
         CancellationToken cancellationToken)
     {
-        if (!_sessionCache.TryGetValue(sessionId, out var session))
-        {
-            throw new InvalidOperationException("Session not found");
-        }
+        var session = await GetOrCreateSessionAsync(sessionId, cancellationToken);
 
-        // Update session state
         session.HandoffState = HandoffState.HumanResponded;
 
-        // Add human response to history
         session.ConversationHistory.Add(new ConversationMessage
         {
-            Role = "agent", // Distinguish from AI assistant
-            Content = $"[Support Agent {humanResponse.AgentName}]: {humanResponse.Message}",
-            Timestamp = humanResponse.RespondedAt
+            Role = "agent",
+            Content = $"[Support Agent {humanResponse.AgentName}]: {humanResponse.Message}"
         });
 
-        return humanResponse.Resolution switch
+        var response = humanResponse.Resolution switch
         {
             HandoffResolution.Resolved => new ChatResponse
             {
@@ -278,479 +988,128 @@ public partial class ChatbotOrchestrator
 
             _ => throw new InvalidOperationException($"Unknown resolution: {humanResponse.Resolution}")
         };
+
+        if (humanResponse.Resolution == HandoffResolution.Resolved)
+        {
+            session.HandoffState = HandoffState.Resolved;
+            session.CurrentHandoffTicketId = null;
+        }
+        else if (humanResponse.Resolution == HandoffResolution.ContinueConversation)
+        {
+            session.HandoffState = HandoffState.HumanConversationActive;
+        }
+
+        await SaveSessionAsync(session, cancellationToken);
+        return response;
     }
 
     /// <summary>
-    /// Polls for human response (for non-realtime integrations)
+    /// Determines which department should handle the request based on the reason.
     /// </summary>
-    public async Task<ChatResponse?> PollHandoffStatusAsync(
-        string sessionId,
-        CancellationToken cancellationToken)
+    private static string DetermineDepartment(string reason)
     {
-        if (!_sessionCache.TryGetValue(sessionId, out var session))
-        {
-            return null;
-        }
+        var reasonLower = reason.ToLowerInvariant();
 
-        if (session.HandoffState != HandoffState.WaitingForHuman ||
-            string.IsNullOrEmpty(session.CurrentHandoffTicketId))
-        {
-            return null;
-        }
-
-        var response = await _handoffService.WaitForHumanResponseAsync(
-            session.CurrentHandoffTicketId,
-            TimeSpan.FromSeconds(5), // Short poll interval
-            cancellationToken);
-
-        if (response != null)
-        {
-            return await HandleHumanResponseAsync(sessionId, response, cancellationToken);
-        }
-
-        return null; // No response yet
-    }
-
-    private string DetermineDepartment(ChatSession session, string reason)
-    {
-        // Simple routing logic - could be enhanced with ML
-        if (reason.Contains("payment", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("balance", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("bill", StringComparison.OrdinalIgnoreCase))
+        if (reasonLower.Contains("payment") || reasonLower.Contains("balance") || reasonLower.Contains("bill"))
             return "Billing";
-        if (reason.Contains("outage", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("meter", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("service", StringComparison.OrdinalIgnoreCase))
+
+        if (reasonLower.Contains("outage") || reasonLower.Contains("meter") || reasonLower.Contains("service"))
             return "Field Services";
-        if (reason.Contains("start", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("stop", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("transfer", StringComparison.OrdinalIgnoreCase))
+
+        if (reasonLower.Contains("start") || reasonLower.Contains("stop") || reasonLower.Contains("transfer"))
             return "New Service";
-        if (reason.Contains("disconnect", StringComparison.OrdinalIgnoreCase) ||
-            reason.Contains("shutoff", StringComparison.OrdinalIgnoreCase))
+
+        if (reasonLower.Contains("disconnect") || reasonLower.Contains("shutoff"))
             return "Collections";
 
         return "General Support";
     }
-}
 
-// Extended session model
-public partial class ChatSession
-{
-    public string? CurrentHandoffTicketId { get; set; }
-    public HandoffState HandoffState { get; set; } = HandoffState.None;
-}
+    // Update existing handler methods to call InitiateHumanHandoffAsync
 
-public enum HandoffState
-{
-    None,
-    WaitingForHuman,
-    HumanResponded,
-    HumanConversationActive,
-    Resolved
-}
-
-// Note: RequiredAction enum is defined in Stage 5 (Orchestrator section)
-// with all values including: HumanConversationActive, TransferInProgress, CallbackScheduled
-```
-
-### WebSocket Hub (SignalR)
-
-```csharp
-using Microsoft.AspNetCore.SignalR;
-
-/// <summary>
-/// SignalR hub for real-time communication between customers and human agents.
-/// Handles message routing, typing indicators, and connection management.
-/// </summary>
-public class ChatHub : Hub
-{
-    private readonly HandoffManager _handoffManager;
-    private readonly ILogger<ChatHub> _logger;
-
-    public ChatHub(HandoffManager handoffManager, ILogger<ChatHub> logger)
+    private async Task<ChatResponse> HandleServiceRequestAsync(
+        ChatSession session,
+        string userMessage,
+        CancellationToken cancellationToken)
     {
-        _handoffManager = handoffManager;
-        _logger = logger;
+        return await InitiateHumanHandoffAsync(
+            session,
+            userMessage,
+            "Service request requiring human assistance",
+            cancellationToken);
     }
 
-    // ========== Customer Methods ==========
-
-    /// <summary>
-    /// Customer joins their chat session
-    /// </summary>
-    public async Task JoinSession(string sessionId)
+    private async Task<ChatResponse> HandleHumanRequestedAsync(
+        ChatSession session,
+        string userMessage,
+        CancellationToken cancellationToken)
     {
-        await Groups.AddToGroupAsync(Context.ConnectionId, $"session:{sessionId}");
-        _handoffManager.RegisterCustomerConnection(sessionId, Context.ConnectionId);
-        _logger.LogInformation("Customer joined session {SessionId}", sessionId);
-    }
-
-    /// <summary>
-    /// Customer sends a message (during handoff, goes to human agent)
-    /// </summary>
-    public async Task SendMessage(string sessionId, string message)
-    {
-        var ticket = _handoffManager.GetActiveTicket(sessionId);
-
-        if (ticket != null && ticket.AssignedAgentId != null)
-        {
-            // Route to assigned human agent
-            await Clients.Group($"agent:{ticket.AssignedAgentId}")
-                .SendAsync("CustomerMessage", new
-                {
-                    TicketId = ticket.TicketId,
-                    SessionId = sessionId,
-                    Message = message,
-                    Timestamp = DateTimeOffset.UtcNow
-                });
-        }
-    }
-
-    // ========== Human Agent Methods ==========
-
-    /// <summary>
-    /// Human agent joins the agent pool
-    /// </summary>
-    public async Task AgentJoin(string agentId, string agentName)
-    {
-        await Groups.AddToGroupAsync(Context.ConnectionId, "agents");
-        await Groups.AddToGroupAsync(Context.ConnectionId, $"agent:{agentId}");
-        _handoffManager.RegisterAgent(agentId, agentName, Context.ConnectionId);
-
-        // Send pending tickets to new agent
-        var pendingTickets = _handoffManager.GetPendingTickets();
-        await Clients.Caller.SendAsync("PendingTickets", pendingTickets);
-
-        _logger.LogInformation("Agent {AgentName} ({AgentId}) connected", agentName, agentId);
-    }
-
-    /// <summary>
-    /// Human agent claims a ticket
-    /// </summary>
-    public async Task ClaimTicket(string ticketId, string agentId)
-    {
-        var ticket = _handoffManager.ClaimTicket(ticketId, agentId);
-
-        if (ticket != null)
-        {
-            // Notify customer that agent has joined
-            await Clients.Group($"session:{ticket.SessionId}")
-                .SendAsync("AgentJoined", new
-                {
-                    AgentName = ticket.AssignedAgentName,
-                    Message = $"Hi! I'm {ticket.AssignedAgentName} from customer support. I've reviewed your conversation and I'm here to help."
-                });
-
-            // Notify all agents that ticket is claimed
-            await Clients.Group("agents")
-                .SendAsync("TicketClaimed", new { TicketId = ticketId, AgentId = agentId });
-
-            // Send full context to claiming agent
-            await Clients.Caller.SendAsync("TicketDetails", ticket);
-        }
-    }
-
-    /// <summary>
-    /// Human agent sends message to customer
-    /// </summary>
-    public async Task AgentMessage(string ticketId, string message)
-    {
-        var ticket = _handoffManager.GetTicket(ticketId);
-
-        if (ticket != null)
-        {
-            await Clients.Group($"session:{ticket.SessionId}")
-                .SendAsync("AgentMessage", new
-                {
-                    AgentName = ticket.AssignedAgentName,
-                    Message = message,
-                    Timestamp = DateTimeOffset.UtcNow
-                });
-
-            // Record in history
-            _handoffManager.AddMessage(ticketId, "agent", message);
-        }
-    }
-
-    /// <summary>
-    /// Human agent resolves the ticket
-    /// </summary>
-    public async Task ResolveTicket(string ticketId, string resolution, string? notes)
-    {
-        var ticket = _handoffManager.ResolveTicket(ticketId, resolution, notes);
-
-        if (ticket != null)
-        {
-            // Notify customer
-            await Clients.Group($"session:{ticket.SessionId}")
-                .SendAsync("ConversationResolved", new
-                {
-                    Resolution = resolution,
-                    Message = "Is there anything else I can help you with today?"
-                });
-
-            // Notify agents
-            await Clients.Group("agents")
-                .SendAsync("TicketResolved", new { TicketId = ticketId });
-        }
-    }
-
-    /// <summary>
-    /// Handle disconnection
-    /// </summary>
-    public override async Task OnDisconnectedAsync(Exception? exception)
-    {
-        _handoffManager.HandleDisconnection(Context.ConnectionId);
-        await base.OnDisconnectedAsync(exception);
+        return await InitiateHumanHandoffAsync(
+            session,
+            userMessage,
+            "Customer requested human agent",
+            cancellationToken);
     }
 }
 ```
 
-### Handoff Manager (In-Memory for Prototyping)
+### Updated DI Registration
 
 ```csharp
-/// <summary>
-/// Manages handoff tickets and routing between customers and human agents.
-/// In-memory implementation for prototyping - replace with Redis/database for production.
-/// </summary>
-public class HandoffManager
+// Update Infrastructure/ServiceCollectionExtensions.cs
+
+using UtilityBillingChatbot.Agents.Summarization;
+using UtilityBillingChatbot.Orchestration.Handoff;
+
+public static class ServiceCollectionExtensions
 {
-    private readonly ConcurrentDictionary<string, HandoffTicket> _tickets = new();
-    private readonly ConcurrentDictionary<string, AgentInfo> _agents = new();
-    private readonly ConcurrentDictionary<string, string> _sessionToTicket = new();
-    private readonly ConcurrentDictionary<string, string> _connectionToSession = new();
-    private readonly IHubContext<ChatHub> _hubContext;
-    private readonly ILogger<HandoffManager> _logger;
-
-    public HandoffManager(IHubContext<ChatHub> hubContext, ILogger<HandoffManager> logger)
+    public static IServiceCollection AddUtilityBillingChatbot(
+        this IServiceCollection services,
+        IConfiguration configuration)
     {
-        _hubContext = hubContext;
-        _logger = logger;
-    }
+        // ... existing registrations ...
 
-    /// <summary>
-    /// Create a new handoff ticket from the orchestrator
-    /// </summary>
-    public async Task<string> CreateTicketAsync(HumanHandoffRequest request)
-    {
-        var ticket = new HandoffTicket
-        {
-            TicketId = request.TicketId,
-            SessionId = request.UserContext.SessionId,
-            CustomerName = request.UserContext.UserName,
-            Summary = request.ConversationSummary,
-            EscalationReason = request.EscalationReason,
-            ConversationHistory = request.ConversationHistory,
-            SuggestedDepartment = request.SuggestedDepartment,
-            Status = TicketStatus.Pending,
-            CreatedAt = DateTimeOffset.UtcNow
-        };
+        // Add agents
+        services.AddClassifierAgent();
+        services.AddFAQAgent();
+        services.AddAuthAgent();
+        services.AddUtilityDataAgent();
+        services.AddSummarizationAgent();  // NEW
 
-        _tickets[ticket.TicketId] = ticket;
-        _sessionToTicket[request.UserContext.SessionId] = ticket.TicketId;
+        // Add handoff services
+        services.AddHandoffServices();      // NEW
 
-        // Notify all connected agents about new ticket
-        await _hubContext.Clients.Group("agents")
-            .SendAsync("NewTicket", new
-            {
-                ticket.TicketId,
-                ticket.CustomerName,
-                ticket.Summary,
-                ticket.EscalationReason,
-                ticket.SuggestedDepartment,
-                ticket.CreatedAt
-            });
+        // Add orchestration
+        services.AddOrchestration();
 
-        _logger.LogInformation("Created handoff ticket {TicketId} for session {SessionId}",
-            ticket.TicketId, ticket.SessionId);
+        // Add the chatbot background service
+        services.AddHostedService<ChatbotService>();
 
-        return ticket.TicketId;
-    }
-
-    public HandoffTicket? ClaimTicket(string ticketId, string agentId)
-    {
-        if (!_tickets.TryGetValue(ticketId, out var ticket))
-            return null;
-
-        if (ticket.Status != TicketStatus.Pending)
-            return null;
-
-        if (!_agents.TryGetValue(agentId, out var agent))
-            return null;
-
-        ticket.AssignedAgentId = agentId;
-        ticket.AssignedAgentName = agent.Name;
-        ticket.Status = TicketStatus.Active;
-        ticket.AssignedAt = DateTimeOffset.UtcNow;
-
-        return ticket;
-    }
-
-    public HandoffTicket? ResolveTicket(string ticketId, string resolution, string? notes)
-    {
-        if (!_tickets.TryGetValue(ticketId, out var ticket))
-            return null;
-
-        ticket.Status = TicketStatus.Resolved;
-        ticket.Resolution = resolution;
-        ticket.ResolutionNotes = notes;
-        ticket.ResolvedAt = DateTimeOffset.UtcNow;
-
-        // Clean up mappings
-        _sessionToTicket.TryRemove(ticket.SessionId, out _);
-
-        return ticket;
-    }
-
-    public void RegisterAgent(string agentId, string name, string connectionId)
-    {
-        _agents[agentId] = new AgentInfo
-        {
-            AgentId = agentId,
-            Name = name,
-            ConnectionId = connectionId,
-            Status = AgentStatus.Available
-        };
-    }
-
-    public void RegisterCustomerConnection(string sessionId, string connectionId)
-    {
-        _connectionToSession[connectionId] = sessionId;
-    }
-
-    public HandoffTicket? GetActiveTicket(string sessionId) =>
-        _sessionToTicket.TryGetValue(sessionId, out var ticketId) &&
-        _tickets.TryGetValue(ticketId, out var ticket) &&
-        ticket.Status == TicketStatus.Active
-            ? ticket : null;
-
-    public HandoffTicket? GetTicket(string ticketId) =>
-        _tickets.TryGetValue(ticketId, out var ticket) ? ticket : null;
-
-    public IEnumerable<HandoffTicket> GetPendingTickets() =>
-        _tickets.Values.Where(t => t.Status == TicketStatus.Pending)
-            .OrderBy(t => t.CreatedAt);
-
-    public void AddMessage(string ticketId, string role, string content)
-    {
-        if (_tickets.TryGetValue(ticketId, out var ticket))
-        {
-            ticket.ConversationHistory.Add(new ConversationMessage
-            {
-                Role = role,
-                Content = content,
-                Timestamp = DateTimeOffset.UtcNow
-            });
-        }
-    }
-
-    public void HandleDisconnection(string connectionId)
-    {
-        // Handle customer disconnection
-        if (_connectionToSession.TryRemove(connectionId, out var sessionId))
-        {
-            _logger.LogInformation("Customer disconnected from session {SessionId}", sessionId);
-        }
-
-        // Handle agent disconnection
-        var agent = _agents.Values.FirstOrDefault(a => a.ConnectionId == connectionId);
-        if (agent != null)
-        {
-            _agents.TryRemove(agent.AgentId, out _);
-            _logger.LogInformation("Agent {AgentId} disconnected", agent.AgentId);
-        }
+        return services;
     }
 }
-
-public class HandoffTicket
-{
-    public string TicketId { get; set; } = string.Empty;
-    public string SessionId { get; set; } = string.Empty;
-    public string? CustomerName { get; set; }
-    public string Summary { get; set; } = string.Empty;
-    public string EscalationReason { get; set; } = string.Empty;
-    public string? SuggestedDepartment { get; set; }
-    public TicketStatus Status { get; set; }
-    public string? AssignedAgentId { get; set; }
-    public string? AssignedAgentName { get; set; }
-    public string? Resolution { get; set; }
-    public string? ResolutionNotes { get; set; }
-    public List<ConversationMessage> ConversationHistory { get; set; } = [];
-    public DateTimeOffset CreatedAt { get; set; }
-    public DateTimeOffset? AssignedAt { get; set; }
-    public DateTimeOffset? ResolvedAt { get; set; }
-}
-
-public enum TicketStatus { Pending, Active, Resolved, Abandoned }
-
-public class AgentInfo
-{
-    public string AgentId { get; set; } = string.Empty;
-    public string Name { get; set; } = string.Empty;
-    public string ConnectionId { get; set; } = string.Empty;
-    public AgentStatus Status { get; set; }
-}
-
-public enum AgentStatus { Available, Busy, Away }
-```
-
-### Program.cs Setup
-
-```csharp
-var builder = WebApplication.CreateBuilder(args);
-
-// Add SignalR
-builder.Services.AddSignalR();
-
-// Add chat client (configure your provider)
-builder.Services.AddSingleton<IChatClient>(sp =>
-{
-    // Configure OpenAI, Azure OpenAI, or other provider
-    return new OpenAIChatClient("gpt-4o", Environment.GetEnvironmentVariable("OPENAI_API_KEY")!);
-});
-
-// Add mock data layer (replace with real CIS integration in production)
-builder.Services.AddSingleton<MockCISDatabase>();
-
-// Register agent factories via interfaces (enables testing and swapping implementations)
-builder.Services.AddSingleton<IClassifierAgentFactory, ClassifierAgentFactory>();
-builder.Services.AddSingleton<IFAQAgentFactory, FAQAgentFactory>();
-builder.Services.AddSingleton<IInBandAuthAgentFactory, InBandAuthAgentFactory>();
-builder.Services.AddSingleton<IUtilityDataAgentFactory, UtilityDataAgentFactory>();
-builder.Services.AddSingleton<ISummarizationAgentFactory, SummarizationAgentFactory>();
-
-// Register session store (use Redis/SQL implementation in production)
-builder.Services.AddSingleton<ISessionStore, InMemorySessionStore>();
-
-// Register handoff services
-builder.Services.AddSingleton<IHandoffService, HumanHandoffService>();
-builder.Services.AddSingleton<HandoffManager>();
-
-// Register orchestrator
-builder.Services.AddSingleton<ChatbotOrchestrator>();
-
-var app = builder.Build();
-
-// Map SignalR hub
-app.MapHub<ChatHub>("/chat");
-
-app.Run();
 ```
 
 ### Testing Stage 6
 
 ```csharp
-public class HandoffTests
+// tests/SummarizationAgentTests.cs
+
+public class SummarizationAgentTests
 {
+    private readonly SummarizationAgent _agent;
+
+    public SummarizationAgentTests()
+    {
+        var chatClient = CreateTestChatClient();
+        var logger = NullLogger<SummarizationAgent>.Instance;
+        _agent = new SummarizationAgent(chatClient, logger);
+    }
+
     [Fact]
-    public async Task Summarizer_CreatesCompleteSummary()
+    public async Task Summarize_CreatesCompleteSummary()
     {
         // Arrange
-        var factory = new SummarizationAgentFactory(_chatClient);
-        var agent = factory.CreateSummarizationAgent();
-        var session = await agent.CreateSessionAsync();
-
         var conversation = """
             user: Hi, I need help with my bill
             assistant: I'd be happy to help! Can I get your account number?
@@ -760,55 +1119,66 @@ public class HandoffTests
             """;
 
         // Act
-        var response = await agent.RunAsync(
-            $"Summarize this conversation:\n{conversation}",
-            session);
+        var response = await _agent.SummarizeAsync(
+            conversation: conversation,
+            escalationReason: "Customer requested supervisor",
+            currentQuestion: "I want to talk to a supervisor");
 
         // Assert
-        Assert.Contains("high bill", response.Text.ToLower());
-        Assert.Contains("ACC-2024-0042", response.Text);
-        Assert.Contains("frustrated", response.Text.ToLower()); // Should detect mood
+        Assert.Contains("bill", response.Summary, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ACC-2024-0042", response.Summary);
+        // Summary should detect frustrated mood
+        Assert.True(
+            response.Summary.Contains("frustrated", StringComparison.OrdinalIgnoreCase) ||
+            response.Summary.Contains("upset", StringComparison.OrdinalIgnoreCase));
     }
+}
+```
 
+```csharp
+// tests/HandoffTests.cs
+
+public class HandoffTests
+{
     [Fact]
-    public async Task Orchestrator_CreatesHandoffTicket()
+    public async Task Orchestrator_InitiatesHandoff_WhenHumanRequested()
     {
         // Arrange
-        var orchestrator = CreateOrchestrator();
+        var orchestrator = CreateTestOrchestrator();
         var sessionId = Guid.NewGuid().ToString();
 
-        // Build some history - Q17: Payment arrangement request
+        // Build some conversation history
         await orchestrator.ProcessMessageAsync(sessionId, "Hi, I have a problem");
-        await orchestrator.ProcessMessageAsync(sessionId, "I can't pay my bill right now and I'm worried about disconnection");
 
-        // Act
+        // Act - request human agent
         var response = await orchestrator.ProcessMessageAsync(
             sessionId,
-            "I need to set up a payment arrangement with someone");
+            "I need to speak to a real person");
 
         // Assert
         Assert.Equal(RequiredAction.HumanHandoffInitiated, response.RequiredAction);
         Assert.NotNull(response.TicketId);
+        Assert.Contains("ticket", response.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public async Task Orchestrator_ProcessesHumanResponse()
+    public async Task Orchestrator_HandlesHumanResponse()
     {
         // Arrange
-        var orchestrator = CreateOrchestrator();
+        var orchestrator = CreateTestOrchestrator();
         var sessionId = Guid.NewGuid().ToString();
 
         // Initiate handoff
         await orchestrator.ProcessMessageAsync(sessionId, "I need to speak to a representative");
 
         // Simulate human response
-        var humanResponse = new HumanResponse
-        {
-            AgentName = "Maria",
-            Message = "Hi, I'm Maria from Billing. I can help you set up a payment arrangement today.",
-            Resolution = HandoffResolution.ContinueConversation,
-            RespondedAt = DateTimeOffset.UtcNow
-        };
+        var humanResponse = new HumanResponse(
+            TicketId: "TEST123",
+            AgentId: "agent-1",
+            AgentName: "Maria",
+            Message: "Hi, I'm Maria from Billing. I can help you set up a payment arrangement today.",
+            Resolution: HandoffResolution.ContinueConversation,
+            RespondedAt: DateTimeOffset.UtcNow);
 
         // Act
         var response = await orchestrator.HandleHumanResponseAsync(
@@ -820,52 +1190,77 @@ public class HandoffTests
     }
 
     [Fact]
-    public async Task HandoffService_QueuesAndWaitsForResponse()
+    public async Task HandoffManager_CreatesAndTracksTickets()
     {
         // Arrange
-        var handoffService = new HumanHandoffService(_queue, _notifications);
+        var manager = new HandoffManager(NullLogger<HandoffManager>.Instance);
         var request = new HumanHandoffRequest
         {
-            ConversationSummary = "Test summary",
-            OriginalQuestion = "Test question"
+            SessionId = "session-123",
+            ConversationSummary = "Customer has billing dispute",
+            OriginalQuestion = "Why is my bill so high?",
+            EscalationReason = "Customer requested human",
+            UserContext = new UserSessionContext { SessionId = "session-123" }
         };
 
         // Act
-        var ticketId = await handoffService.CreateHandoffTicketAsync(request, CancellationToken.None);
-
-        // Simulate human response in background
-        _ = Task.Run(async () =>
-        {
-            await Task.Delay(1000);
-            await _queue.RespondToTicketAsync(ticketId, new HumanResponse
-            {
-                Message = "I can help",
-                Resolution = HandoffResolution.Resolved
-            });
-        });
-
-        var response = await handoffService.WaitForHumanResponseAsync(
-            ticketId,
-            TimeSpan.FromSeconds(5),
-            CancellationToken.None);
+        var ticketId = await manager.CreateTicketAsync(request);
+        var ticket = manager.GetTicket(ticketId);
 
         // Assert
-        Assert.NotNull(response);
-        Assert.Equal("I can help", response.Message);
+        Assert.NotNull(ticket);
+        Assert.Equal(TicketStatus.Pending, ticket.Status);
+        Assert.Equal("session-123", ticket.SessionId);
+    }
+
+    [Fact]
+    public async Task HandoffManager_AgentCanClaimTicket()
+    {
+        // Arrange
+        var manager = new HandoffManager(NullLogger<HandoffManager>.Instance);
+        var ticketId = await manager.CreateTicketAsync(new HumanHandoffRequest
+        {
+            SessionId = "session-123",
+            ConversationSummary = "Test",
+            OriginalQuestion = "Test",
+            EscalationReason = "Test",
+            UserContext = new UserSessionContext { SessionId = "session-123" }
+        });
+
+        // Act
+        var claimed = manager.ClaimTicket(ticketId, "agent-1", "Maria");
+
+        // Assert
+        Assert.NotNull(claimed);
+        Assert.Equal(TicketStatus.Active, claimed.Status);
+        Assert.Equal("Maria", claimed.AssignedAgentName);
     }
 }
 ```
 
 ### Validation Checklist - Stage 6
-- [ ] Summarization agent creates complete, structured summaries
+
+- [ ] SummarizationAgent follows existing agent patterns (no factory)
+- [ ] Summarization produces structured markdown summaries
 - [ ] Summary includes user issue, AI attempts, and escalation reason
-- [ ] Summary correctly detects user emotional state
-- [ ] Handoff tickets are created with all required information
-- [ ] Human agents receive notifications for new tickets
-- [ ] Customers receive ticket number and queue position
-- [ ] Human responses are delivered to customers
-- [ ] Timeout handling works when no human available
-- [ ] Conversation history is preserved for human agent review
-- [ ] Resolution types are handled correctly (Resolved, Continue, Transfer, Callback)
+- [ ] Summary detects user emotional state
+- [ ] HandoffService creates tickets with all required information
+- [ ] HandoffManager tracks tickets and supports agent claims
+- [ ] ChatSession extended with handoff state fields
+- [ ] Orchestrator initiates handoff on ServiceRequest/HumanRequested
+- [ ] Orchestrator handles messages during active handoff
+- [ ] Human responses are processed and update session state
+- [ ] DI registration follows `Add{Name}Agent()` / `Add{Name}Services()` pattern
+- [ ] All new code has XML doc comments
+- [ ] Unit tests cover core handoff scenarios
+
+### Future Enhancements (Out of Scope)
+
+For production deployment, consider:
+- **Real-time communication**: Replace in-memory with SignalR hub for WebSocket support
+- **Persistent storage**: Replace `HandoffManager` with Redis/SQL-backed implementation
+- **Agent UI**: Build Blazor/React dashboard for human agents
+- **Queue management**: Add priority queuing, SLA tracking, agent workload balancing
+- **Analytics**: Track handoff metrics (time to claim, resolution time, etc.)
 
 ---

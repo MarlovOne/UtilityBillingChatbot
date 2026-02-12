@@ -1,10 +1,12 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using System.Collections.Concurrent;
+using System.Text;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.FAQ;
+using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
 
 namespace UtilityBillingChatbot.Orchestration;
@@ -19,6 +21,7 @@ public class ChatbotOrchestrator
     private readonly FAQAgent _faqAgent;
     private readonly AuthAgent _authAgent;
     private readonly UtilityDataAgent _utilityDataAgent;
+    private readonly SummarizationAgent _summarizationAgent;
     private readonly ISessionStore _sessionStore;
     private readonly ILogger<ChatbotOrchestrator> _logger;
 
@@ -33,6 +36,7 @@ public class ChatbotOrchestrator
         FAQAgent faqAgent,
         AuthAgent authAgent,
         UtilityDataAgent utilityDataAgent,
+        SummarizationAgent summarizationAgent,
         ISessionStore sessionStore,
         ILogger<ChatbotOrchestrator> logger)
     {
@@ -40,6 +44,7 @@ public class ChatbotOrchestrator
         _faqAgent = faqAgent;
         _authAgent = authAgent;
         _utilityDataAgent = utilityDataAgent;
+        _summarizationAgent = summarizationAgent;
         _sessionStore = sessionStore;
         _logger = logger;
     }
@@ -135,22 +140,34 @@ public class ChatbotOrchestrator
 
         return classification.Category switch
         {
-            QuestionCategory.BillingFAQ => await HandleBillingFAQAsync(userMessage, cancellationToken),
+            QuestionCategory.BillingFAQ => await HandleBillingFAQAsync(session, userMessage, cancellationToken),
             QuestionCategory.AccountData => await HandleAccountDataAsync(session, userMessage, cancellationToken),
-            QuestionCategory.ServiceRequest => HandleServiceRequest(),
-            QuestionCategory.HumanRequested => HandleHumanRequested(),
+            QuestionCategory.ServiceRequest => await HandleServiceRequestAsync(session, userMessage, cancellationToken),
+            QuestionCategory.HumanRequested => await HandleHumanRequestedAsync(session, userMessage, cancellationToken),
             QuestionCategory.OutOfScope => HandleOutOfScope(),
             _ => HandleOutOfScope()
         };
     }
 
     private async Task<ChatResponse> HandleBillingFAQAsync(
+        ChatSession session,
         string userMessage,
         CancellationToken cancellationToken)
     {
         _logger.LogDebug("Routing to FAQ agent");
 
         var faqResponse = await _faqAgent.AnswerAsync(userMessage, cancellationToken: cancellationToken);
+
+        // If the FAQ agent can't answer, escalate to human
+        if (!faqResponse.FoundAnswer)
+        {
+            _logger.LogInformation("FAQ agent cannot answer (FoundAnswer=false), escalating to human");
+            return await InitiateHumanHandoffAsync(
+                session,
+                userMessage,
+                "Question outside FAQ knowledge base",
+                cancellationToken);
+        }
 
         return new ChatResponse
         {
@@ -188,6 +205,17 @@ public class ChatbotOrchestrator
                 userMessage,
                 authSession: session.AuthSession,
                 cancellationToken: cancellationToken);
+
+            // If the UtilityData agent can't answer, escalate to human
+            if (!dataResponse.FoundAnswer)
+            {
+                _logger.LogInformation("UtilityData agent cannot answer (FoundAnswer=false), escalating to human");
+                return await InitiateHumanHandoffAsync(
+                    session,
+                    userMessage,
+                    "Account question outside agent capabilities",
+                    cancellationToken);
+            }
 
             return new ChatResponse
             {
@@ -302,27 +330,111 @@ public class ChatbotOrchestrator
         };
     }
 
-    private static ChatResponse HandleServiceRequest()
+    private async Task<ChatResponse> HandleServiceRequestAsync(
+        ChatSession session,
+        string userMessage,
+        CancellationToken cancellationToken)
     {
+        _logger.LogDebug("Initiating handoff for service request");
+        return await InitiateHumanHandoffAsync(
+            session,
+            userMessage,
+            "Service request requiring human assistance",
+            cancellationToken);
+    }
+
+    private async Task<ChatResponse> HandleHumanRequestedAsync(
+        ChatSession session,
+        string userMessage,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogDebug("Customer requested human agent");
+        return await InitiateHumanHandoffAsync(
+            session,
+            userMessage,
+            "Customer explicitly requested human agent",
+            cancellationToken);
+    }
+
+    private async Task<ChatResponse> InitiateHumanHandoffAsync(
+        ChatSession session,
+        string userMessage,
+        string escalationReason,
+        CancellationToken cancellationToken)
+    {
+        // Build conversation text for summarization
+        var conversationText = string.Join("\n",
+            session.ConversationHistory.Select(m => $"{m.Role}: {m.Content}"));
+
+        // Generate summary
+        var summary = await _summarizationAgent.SummarizeAsync(
+            conversationText,
+            escalationReason,
+            userMessage,
+            cancellationToken);
+
+        // Calculate conversation duration
+        var conversationDuration = session.ConversationHistory.Count > 0
+            ? DateTimeOffset.UtcNow - session.ConversationHistory[0].Timestamp
+            : TimeSpan.Zero;
+
+        // Build the handoff package
+        var package = new HandoffPackage(
+            SessionId: session.SessionId,
+            CustomerName: session.UserContext.CustomerName,
+            AccountNumber: session.UserContext.CustomerId,
+            Intent: summary.OriginalQuestion,
+            ConversationSummary: summary.Summary,
+            ConversationDuration: conversationDuration,
+            RecommendedOpening: BuildRecommendedOpening(session, summary),
+            ConversationHistory: session.ConversationHistory.ToList()
+        );
+
+        // Log the handoff package (mock "send to Salesforce")
+        LogHandoffPackage(package);
+
         return new ChatResponse
         {
-            Message = "For service requests like payment extensions, meter checks, or rate plan changes, " +
-                      "I'll need to connect you with a customer service representative who can assist you. " +
-                      "Would you like me to transfer you to an agent?",
-            Category = QuestionCategory.ServiceRequest,
-            RequiredAction = RequiredAction.HumanHandoffNeeded
+            Message = "I've forwarded your request to a customer service representative. " +
+                      "They'll reach out to you shortly to assist with your inquiry. " +
+                      "Is there anything else I can help you with in the meantime?",
+            Category = QuestionCategory.HumanRequested,
+            RequiredAction = RequiredAction.None
         };
     }
 
-    private static ChatResponse HandleHumanRequested()
+    private static string BuildRecommendedOpening(ChatSession session, SummaryResponse summary)
     {
-        return new ChatResponse
-        {
-            Message = "I understand you'd like to speak with a customer service representative. " +
-                      "Please hold while I connect you to an agent who can assist you further.",
-            Category = QuestionCategory.HumanRequested,
-            RequiredAction = RequiredAction.HumanHandoffNeeded
-        };
+        var greeting = session.UserContext.CustomerName is not null
+            ? $"Hello {session.UserContext.CustomerName},"
+            : "Hello,";
+
+        return $"{greeting} I'm following up on your recent chat with our virtual assistant. " +
+               $"I understand you need help with: {summary.OriginalQuestion}";
+    }
+
+    private void LogHandoffPackage(HandoffPackage package)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine("═══════════════════════════════════════════════════════════════");
+        sb.AppendLine("                    CSR HANDOFF PACKAGE");
+        sb.AppendLine("═══════════════════════════════════════════════════════════════");
+        sb.AppendLine($"Session:           {package.SessionId}");
+        sb.AppendLine($"Customer:          {package.CustomerName ?? "Not authenticated"}");
+        sb.AppendLine($"Account:           {package.AccountNumber ?? "N/A"}");
+        sb.AppendLine($"Duration:          {package.ConversationDuration:hh\\:mm\\:ss}");
+        sb.AppendLine("───────────────────────────────────────────────────────────────");
+        sb.AppendLine($"INTENT:            {package.Intent}");
+        sb.AppendLine("───────────────────────────────────────────────────────────────");
+        sb.AppendLine("SUMMARY:");
+        sb.AppendLine(package.ConversationSummary);
+        sb.AppendLine("───────────────────────────────────────────────────────────────");
+        sb.AppendLine("RECOMMENDED OPENING:");
+        sb.AppendLine($"\"{package.RecommendedOpening}\"");
+        sb.AppendLine("═══════════════════════════════════════════════════════════════");
+
+        _logger.LogInformation("{HandoffPackage}", sb.ToString());
     }
 
     private static ChatResponse HandleOutOfScope()

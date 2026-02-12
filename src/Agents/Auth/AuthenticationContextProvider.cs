@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace UtilityBillingChatbot.Agents.Auth;
 
@@ -14,6 +15,9 @@ namespace UtilityBillingChatbot.Agents.Auth;
 public sealed class AuthenticationContextProvider : AIContextProvider
 {
     private readonly MockCISDatabase _cisDatabase;
+
+    private readonly ILogger<AuthenticationContextProvider> _logger;
+
     private const int MaxAttempts = 3;
 
     // Mutable state
@@ -28,9 +32,11 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     /// <summary>
     /// Constructor for new sessions.
     /// </summary>
-    public AuthenticationContextProvider(MockCISDatabase cisDatabase)
+    public AuthenticationContextProvider(
+        MockCISDatabase cisDatabase, ILogger<AuthenticationContextProvider> logger)
     {
         _cisDatabase = cisDatabase;
+        _logger = logger;
     }
 
     /// <summary>
@@ -39,35 +45,39 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     public AuthenticationContextProvider(
         MockCISDatabase cisDatabase,
         JsonElement jsonElement,
-        JsonSerializerOptions? options = null) : this(cisDatabase)
+        ILogger<AuthenticationContextProvider> logger,
+        JsonSerializerOptions? options = null) : this(cisDatabase, logger)
     {
-        if (jsonElement.ValueKind == JsonValueKind.Object)
+        if (jsonElement.ValueKind != JsonValueKind.Object)
         {
-            if (jsonElement.TryGetProperty("authState", out var state))
-                _authState = Enum.Parse<AuthenticationState>(state.GetString() ?? "Anonymous");
-
-            if (jsonElement.TryGetProperty("failedAttempts", out var attempts))
-                _failedAttempts = attempts.GetInt32();
-
-            if (jsonElement.TryGetProperty("verifiedFactors", out var factors))
-            {
-                foreach (var factor in factors.EnumerateArray())
-                    _verifiedFactors.Add(factor.GetString() ?? "");
-            }
-
-            if (jsonElement.TryGetProperty("identifyingInfo", out var info))
-                _identifyingInfo = info.GetString();
-
-            if (jsonElement.TryGetProperty("customerId", out var id))
-                _customerId = id.GetString();
-
-            if (jsonElement.TryGetProperty("customerName", out var name))
-                _customerName = name.GetString();
-
-            if (jsonElement.TryGetProperty("authenticatedAt", out var authAt) &&
-                DateTimeOffset.TryParse(authAt.GetString(), out var parsed))
-                _authenticatedAt = parsed;
+            _logger.LogError("Invalid JSON for AuthenticationContextProvider state. Expected an object.");
+            throw new ArgumentException("Invalid JSON for AuthenticationContextProvider state. Expected an object.");
         }
+
+        if (jsonElement.TryGetProperty("authState", out var state))
+            _authState = Enum.Parse<AuthenticationState>(state.GetString() ?? "Anonymous");
+
+        if (jsonElement.TryGetProperty("failedAttempts", out var attempts))
+            _failedAttempts = attempts.GetInt32();
+
+        if (jsonElement.TryGetProperty("verifiedFactors", out var factors))
+        {
+            foreach (var factor in factors.EnumerateArray())
+                _verifiedFactors.Add(factor.GetString() ?? "");
+        }
+
+        if (jsonElement.TryGetProperty("identifyingInfo", out var info))
+            _identifyingInfo = info.GetString();
+
+        if (jsonElement.TryGetProperty("customerId", out var id))
+            _customerId = id.GetString();
+
+        if (jsonElement.TryGetProperty("customerName", out var name))
+            _customerName = name.GetString();
+
+        if (jsonElement.TryGetProperty("authenticatedAt", out var authAt) &&
+            DateTimeOffset.TryParse(authAt.GetString(), out var parsed))
+            _authenticatedAt = parsed;
     }
 
     // Public accessors for external code (e.g., routing decisions)

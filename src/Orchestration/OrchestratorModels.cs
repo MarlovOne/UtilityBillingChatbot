@@ -54,3 +54,18 @@ public enum RequiredAction
     /// <summary>Question was unclear, clarification needed.</summary>
     ClarificationNeeded
 }
+
+/// <summary>
+/// Fire-and-forget package containing all information needed for CSR handoff.
+/// This gets logged and "sent to Salesforce" (mock).
+/// </summary>
+public record HandoffPackage(
+    string SessionId,
+    string? CustomerName,
+    string? AccountNumber,
+    string Intent,
+    string ConversationSummary,
+    TimeSpan ConversationDuration,
+    string RecommendedOpening,
+    List<ConversationMessage> ConversationHistory
+);

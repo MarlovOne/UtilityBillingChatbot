@@ -17,15 +17,18 @@ public class AuthAgent
     private readonly IChatClient _chatClient;
     private readonly MockCISDatabase _cisDatabase;
     private readonly ILogger<AuthAgent> _logger;
+    private readonly ILogger<AuthenticationContextProvider> _providerLogger;
 
     public AuthAgent(
         IChatClient chatClient,
         MockCISDatabase cisDatabase,
-        ILogger<AuthAgent> logger)
+        ILogger<AuthAgent> logger,
+        ILogger<AuthenticationContextProvider> providerLogger)
     {
         _chatClient = chatClient;
         _cisDatabase = cisDatabase;
         _logger = logger;
+        _providerLogger = providerLogger;
     }
 
     /// <summary>
@@ -67,7 +70,7 @@ public class AuthAgent
     /// </summary>
     public async Task<AuthSession> CreateSessionAsync(CancellationToken cancellationToken = default)
     {
-        var provider = new AuthenticationContextProvider(_cisDatabase);
+        var provider = new AuthenticationContextProvider(_cisDatabase, _providerLogger);
 
         var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
         {
@@ -78,7 +81,7 @@ public class AuthAgent
                 if (ctx.SerializedState.ValueKind == JsonValueKind.Object)
                 {
                     return new ValueTask<AIContextProvider>(
-                        new AuthenticationContextProvider(_cisDatabase, ctx.SerializedState, ctx.JsonSerializerOptions));
+                        new AuthenticationContextProvider(_cisDatabase, ctx.SerializedState, _providerLogger));
                 }
                 return new ValueTask<AIContextProvider>(provider);
             }

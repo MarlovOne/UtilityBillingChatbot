@@ -119,4 +119,51 @@ public class OrchestratorTests : IAsyncLifetime
             response.Message.Contains("account", StringComparison.OrdinalIgnoreCase),
             $"Expected out-of-scope response. Got: {response.Message}");
     }
+
+    [Fact]
+    public async Task Orchestrator_InitiatesHandoff_ForHumanRequested()
+    {
+        var sessionId = Guid.NewGuid().ToString();
+
+        // Request to speak to a human
+        var r1 = await _orchestrator.ProcessMessageAsync(
+            sessionId,
+            "I want to speak to a representative");
+
+        // Fire-and-forget handoff returns None (conversation continues)
+        Assert.Equal(RequiredAction.None, r1.RequiredAction);
+        Assert.True(
+            r1.Message.Contains("representative", StringComparison.OrdinalIgnoreCase) ||
+            r1.Message.Contains("reach out", StringComparison.OrdinalIgnoreCase) ||
+            r1.Message.Contains("forwarded", StringComparison.OrdinalIgnoreCase),
+            $"Expected handoff acknowledgment. Got: {r1.Message}");
+
+        // User can continue chatting after handoff
+        var r2 = await _orchestrator.ProcessMessageAsync(
+            sessionId,
+            "What are my payment options?");
+
+        Assert.Equal(QuestionCategory.BillingFAQ, r2.Category);
+        Assert.Equal(RequiredAction.None, r2.RequiredAction);
+    }
+
+    [Fact]
+    public async Task Orchestrator_EscalatesToHuman_WhenFAQCannotAnswer()
+    {
+        var sessionId = Guid.NewGuid().ToString();
+
+        // Ask about late fees - billing related but not in FAQ knowledge base
+        var response = await _orchestrator.ProcessMessageAsync(
+            sessionId,
+            "What are the late payment fees if I miss my due date?");
+
+        // Should auto-escalate to human since FAQ can't answer (FoundAnswer=false)
+        Assert.Equal(RequiredAction.None, response.RequiredAction);
+        Assert.True(
+            response.Message.Contains("representative", StringComparison.OrdinalIgnoreCase) ||
+            response.Message.Contains("reach out", StringComparison.OrdinalIgnoreCase) ||
+            response.Message.Contains("forwarded", StringComparison.OrdinalIgnoreCase) ||
+            response.Message.Contains("customer service", StringComparison.OrdinalIgnoreCase),
+            $"Expected handoff response when FAQ can't answer. Got: {response.Message}");
+    }
 }

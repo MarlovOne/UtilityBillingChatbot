@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.FAQ;
+using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
 using UtilityBillingChatbot.Orchestration;
 using UtilityBillingChatbot.Telemetry;
@@ -33,7 +34,7 @@ public static class ServiceCollectionExtensions
         services.AddVerifiedQuestions(configuration);
 
         // Add chat client
-        services.AddSingleton<IChatClient>(sp =>
+        services.AddSingleton(sp =>
         {
             var llmOptions = configuration.GetSection("LLM").Get<LlmOptions>()
                 ?? throw new InvalidOperationException("LLM configuration not found");
@@ -50,6 +51,7 @@ public static class ServiceCollectionExtensions
         services.AddFAQAgent();
         services.AddAuthAgent();
         services.AddUtilityDataAgent();
+        services.AddSummarizationAgent();
 
         // Add orchestration
         services.AddOrchestration();

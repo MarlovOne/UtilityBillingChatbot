@@ -59,9 +59,10 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             - Use the tools to get accurate information before answering
             - Format currency amounts clearly (e.g., $187.43)
             - When discussing dates, be specific (e.g., "February 15, 2024")
-            - If the customer asks about something you don't have tools for,
-              let them know and offer to connect them with customer service
             - Keep responses concise but complete
+            - Set foundAnswer to true if you can answer using your available tools
+            - Set foundAnswer to false if the question is outside your capabilities
+              (e.g., service changes, complaints, technical issues, rate changes)
             """;
     }
 
