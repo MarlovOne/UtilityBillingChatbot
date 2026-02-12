@@ -31,12 +31,6 @@ public class SummaryResponse
     public required string OriginalQuestion { get; set; }
 
     /// <summary>
-    /// Suggested department or specialist for handling this request.
-    /// </summary>
-    [JsonPropertyName("suggestedDepartment")]
-    public string? SuggestedDepartment { get; set; }
-
-    /// <summary>
     /// Key facts extracted from the conversation that may be useful.
     /// </summary>
     [JsonPropertyName("keyFacts")]

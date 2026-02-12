@@ -95,7 +95,7 @@ public sealed class UtilityDataContextProvider : AIContextProvider
     public BalanceResult GetAccountBalance()
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
-        var daysUntilDue = _customer.DueDate.DayNumber - today.DayNumber;
+        var daysUntilDue = (int)(_customer.DueDate.ToDateTime(TimeOnly.MinValue) - today.ToDateTime(TimeOnly.MinValue)).TotalDays;
         var status = daysUntilDue < 0 ? "Past Due" :
                      daysUntilDue == 0 ? "Due Today" :
                      _customer.AccountBalance == 0 ? "Paid" : "Current";
@@ -114,7 +114,7 @@ public sealed class UtilityDataContextProvider : AIContextProvider
     public PaymentStatusResult GetPaymentStatus()
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
-        var daysSincePayment = today.DayNumber - _customer.LastPaymentDate.DayNumber;
+        var daysSincePayment = (int)(today.ToDateTime(TimeOnly.MinValue) - _customer.LastPaymentDate.ToDateTime(TimeOnly.MinValue)).TotalDays;
         var recentPayment = daysSincePayment <= 30;
 
         var message = recentPayment
@@ -133,7 +133,7 @@ public sealed class UtilityDataContextProvider : AIContextProvider
     public DueDateResult GetDueDate()
     {
         var today = DateOnly.FromDateTime(DateTime.Now);
-        var daysUntilDue = _customer.DueDate.DayNumber - today.DayNumber;
+        var daysUntilDue = (int)(_customer.DueDate.ToDateTime(TimeOnly.MinValue) - today.ToDateTime(TimeOnly.MinValue)).TotalDays;
         var isPastDue = daysUntilDue < 0;
 
         var message = isPastDue
