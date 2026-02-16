@@ -10,7 +10,7 @@ Multi-agent utility billing chatbot built on Microsoft Agent Framework. Learning
 - Agent Framework samples: `/home/lmark/git/agent-framework/dotnet/samples`
 - Use the `ms-agent-framework:agent-framework` skill for framework guidance
 - Architecture docs: `docs/CustomerSupportChatbot_Architecture.md`
-- Future plans: `docs/plans/`
+- Stage implementation specs: `docs/CustomerSupportChatbot_stage*.md`
 
 ## Build Commands
 
@@ -35,24 +35,22 @@ dotnet test --filter "FullyQualifiedName~ClassifierAgentTests.Classifier_Categor
 ```
 src/
 ├── Agents/
-│   ├── Classifier/           # Question classification feature
-│   │   ├── ClassifierAgent.cs
-│   │   ├── ClassifierPrompts.cs
-│   │   ├── QuestionClassification.cs
-│   │   ├── QuestionCategory.cs
-│   │   └── VerifiedQuestion.cs
-│   └── FAQ/                  # FAQ knowledge base agent
-│       └── FAQAgent.cs
+│   ├── Classifier/           # Question classification
+│   ├── FAQ/                  # FAQ knowledge base
+│   ├── Auth/                 # In-band authentication flow
+│   ├── UtilityData/          # Account data queries (requires auth)
+│   └── Summarization/        # Conversation summarization for handoff
+├── Orchestration/            # Session management and routing
+│   ├── ChatbotOrchestrator.cs
+│   ├── ChatSession.cs
+│   ├── ISessionStore.cs
+│   ├── InMemorySessionStore.cs
+│   └── Handoff/              # Human agent handoff
 ├── Infrastructure/           # Cross-cutting concerns
 │   ├── ChatClientFactory.cs
 │   ├── ChatbotService.cs
-│   ├── LlmOptions.cs
 │   └── ServiceCollectionExtensions.cs
-├── Telemetry/               # Observability
-│   ├── AgentMetrics.cs
-│   ├── TelemetryOptions.cs
-│   ├── TelemetryServiceCollectionExtensions.cs
-│   └── Middleware/
+├── Telemetry/               # Observability (OpenTelemetry)
 ├── Data/
 │   ├── verified-questions.json
 │   └── faq-knowledge-base.md
@@ -60,8 +58,11 @@ src/
 ```
 
 **Key flow:**
-1. User input → ClassifierAgent → QuestionClassification (structured JSON output)
-2. Classification routes to downstream agents (FAQ, Auth, UtilityData - future stages)
+1. User input → `ChatbotOrchestrator` → `ClassifierAgent` → `QuestionClassification`
+2. Classification routes to appropriate agent:
+   - `BillingFAQ` → `FAQAgent` (knowledge base lookup)
+   - `AccountData` → `AuthAgent` (if needed) → `UtilityDataAgent` (mock CIS data)
+   - `ServiceRequest` / `HumanRequested` → `SummarizationAgent` → Handoff ticket
 3. All agents use `ChatResponseFormat.ForJsonSchema<T>()` for typed responses
 
 **Agent pattern:**
@@ -87,13 +88,17 @@ Register in `Infrastructure/ServiceCollectionExtensions.cs`: `services.AddFeatur
 
 | Path | Purpose |
 |------|---------|
-| `Infrastructure/ServiceCollectionExtensions.cs` | Main DI setup, `AddUtilityBillingChatbot()` |
-| `Infrastructure/ChatClientFactory.cs` | Creates IChatClient (Azure/OpenAI/HuggingFace) |
-| `Agents/Classifier/ClassifierAgent.cs` | Question categorization with structured output |
+| `Orchestration/ChatbotOrchestrator.cs` | Main routing logic, session management |
+| `Orchestration/ChatSession.cs` | Session state (auth, history, handoff) |
+| `Agents/Classifier/ClassifierAgent.cs` | Question categorization |
 | `Agents/FAQ/FAQAgent.cs` | FAQ answers from knowledge base |
-| `Infrastructure/ChatbotService.cs` | Console REPL loop (BackgroundService) |
-| `Agents/Classifier/QuestionClassification.cs` | Classifier output schema |
-| `Data/verified-questions.json` | Known question types with metadata |
+| `Agents/Auth/AuthAgent.cs` | In-band authentication flow |
+| `Agents/Auth/AuthenticationContextProvider.cs` | Auth state + verification tools |
+| `Agents/UtilityData/UtilityDataAgent.cs` | Account data queries |
+| `Agents/Summarization/SummarizationAgent.cs` | Conversation summaries for handoff |
+| `Orchestration/Handoff/HandoffService.cs` | Human agent ticket management |
+| `Infrastructure/ServiceCollectionExtensions.cs` | Main DI setup |
+| `Infrastructure/ChatbotService.cs` | Console REPL loop |
 | `Data/faq-knowledge-base.md` | FAQ knowledge base content |
 
 ## LLM Configuration
@@ -108,7 +113,7 @@ Three providers supported in `appsettings.json`:
 1. Create `Agents/{Name}/` directory with agent class + models
 2. Add `Add{Name}Agent()` extension in the agent file
 3. Call `services.Add{Name}Agent()` in `Infrastructure/ServiceCollectionExtensions.cs`
-4. Inject into `ChatbotService` and add routing logic
+4. Inject into `ChatbotOrchestrator` and add routing logic in `RouteMessageAsync()`
 
 ## Structured Output
 
@@ -129,9 +134,10 @@ OpenTelemetry enabled by default. Configure in `appsettings.json`:
 
 | Stage | Component | Status |
 |-------|-----------|--------|
-| 1 | Classifier Agent | Implemented |
-| 2 | FAQ Agent | Implemented |
-| 3 | In-Band Auth Agent | Planned |
-| 4 | Utility Data Agent | Planned |
-| 5 | Orchestrator | Planned |
-| 6 | Summarization/Handoff | Planned |
+| 1 | Classifier Agent | ✅ Implemented |
+| 2 | FAQ Agent | ✅ Implemented |
+| 3 | In-Band Auth Agent | ✅ Implemented |
+| 4 | Utility Data Agent | ✅ Implemented |
+| 5 | Orchestrator | ✅ Implemented |
+| 6 | Summarization/Handoff | ✅ Implemented |
+| 7 | Session Persistence | Planned |
