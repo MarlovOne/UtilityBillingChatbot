@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using Microsoft.Extensions.AI;
+using UtilityBillingChatbot.Telemetry;
 
 namespace UtilityBillingChatbot.Infrastructure;
 
@@ -34,7 +35,13 @@ public static class ChatClientFactory
         var client = new Azure.AI.OpenAI.AzureOpenAIClient(
             new Uri(options.Endpoint!),
             new System.ClientModel.ApiKeyCredential(options.ApiKey!));
-        return client.GetChatClient(options.DeploymentName).AsIChatClient();
+        return client.GetChatClient(options.DeploymentName)
+            .AsIChatClient()
+            .AsBuilder()
+            .UseOpenTelemetry(
+                sourceName: TelemetryServiceCollectionExtensions.ServiceName,
+                configure: cfg => cfg.EnableSensitiveData = false)
+            .Build();
     }
 
     private static IChatClient CreateOpenAI(OpenAIOptions options)
@@ -55,7 +62,13 @@ public static class ChatClientFactory
             client = new OpenAI.OpenAIClient(options.ApiKey!);
         }
 
-        return client.GetChatClient(options.Model).AsIChatClient();
+        return client.GetChatClient(options.Model)
+            .AsIChatClient()
+            .AsBuilder()
+            .UseOpenTelemetry(
+                sourceName: TelemetryServiceCollectionExtensions.ServiceName,
+                configure: cfg => cfg.EnableSensitiveData = false)
+            .Build();
     }
 
     private static IChatClient CreateHuggingFace(HuggingFaceOptions options)
@@ -76,6 +89,12 @@ public static class ChatClientFactory
             new System.ClientModel.ApiKeyCredential(options.ApiKey!),
             clientOptions);
 
-        return client.GetChatClient(options.Model).AsIChatClient();
+        return client.GetChatClient(options.Model)
+            .AsIChatClient()
+            .AsBuilder()
+            .UseOpenTelemetry(
+                sourceName: TelemetryServiceCollectionExtensions.ServiceName,
+                configure: cfg => cfg.EnableSensitiveData = false)
+            .Build();
     }
 }

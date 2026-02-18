@@ -11,6 +11,7 @@ using UtilityBillingChatbot.Agents.NextBestAction;
 using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
 using UtilityBillingChatbot.Orchestration;
+using UtilityBillingChatbot.Telemetry;
 
 namespace UtilityBillingChatbot.Infrastructure;
 
@@ -28,6 +29,9 @@ public static class ServiceCollectionExtensions
     {
         // Configure options
         services.Configure<LlmOptions>(configuration.GetSection("LLM"));
+
+        // Add OpenTelemetry observability
+        services.AddOpenTelemetryObservability(configuration);
 
         // Load verified questions
         services.AddVerifiedQuestions(configuration);
