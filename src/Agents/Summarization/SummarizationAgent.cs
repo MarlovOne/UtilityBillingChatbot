@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using System.Diagnostics.CodeAnalysis;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using UtilityBillingChatbot.Infrastructure;
 
 namespace UtilityBillingChatbot.Agents.Summarization;
 
@@ -77,7 +75,7 @@ public class SummarizationAgent
             session: session,
             cancellationToken: cancellationToken);
 
-        if (!TryGetResult(response, out var summary, out var error))
+        if (!AgentResponseParser.TryGetResult(response, out var summary, out var error))
         {
             _logger.LogWarning("Failed to parse summary response: {Error}", error);
             // Return a fallback summary
@@ -92,68 +90,6 @@ public class SummarizationAgent
 
         _logger.LogInformation("Generated summary for handoff: {Summary}", summary.Summary);
         return summary;
-    }
-
-    private static bool TryGetResult<T>(
-        ChatClientAgentResponse<T> response,
-        [NotNullWhen(true)] out T? result,
-        out string? error)
-    {
-        try
-        {
-            result = response.Result;
-            if (result is null)
-            {
-                error = $"Structured output was null. Raw response: {response.Text}";
-                return false;
-            }
-            error = null;
-            return true;
-        }
-        catch (JsonException)
-        {
-            // LLM may return JSON wrapped in markdown code blocks - try to extract and parse
-            return TryParseFromRawText<T>(response.Text, out result, out error);
-        }
-    }
-
-    private static bool TryParseFromRawText<T>(
-        string? rawText,
-        [NotNullWhen(true)] out T? result,
-        out string? error)
-    {
-        if (string.IsNullOrWhiteSpace(rawText))
-        {
-            result = default;
-            error = "Response text was empty";
-            return false;
-        }
-
-        var json = ExtractJsonFromMarkdown(rawText);
-
-        try
-        {
-            result = JsonSerializer.Deserialize<T>(json, JsonSerializerOptions.Web);
-            if (result is null)
-            {
-                error = $"Deserialized result was null. Raw response: {rawText}";
-                return false;
-            }
-            error = null;
-            return true;
-        }
-        catch (JsonException ex)
-        {
-            result = default;
-            error = $"JSON parsing failed: {ex.Message}. Raw response: {rawText}";
-            return false;
-        }
-    }
-
-    private static string ExtractJsonFromMarkdown(string text)
-    {
-        var match = Regex.Match(text, @"```(?:json)?\s*([\s\S]*?)\s*```", RegexOptions.IgnoreCase);
-        return match.Success ? match.Groups[1].Value.Trim() : text.Trim();
     }
 
     private static string BuildInstructions()

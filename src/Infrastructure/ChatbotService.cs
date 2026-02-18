@@ -98,6 +98,17 @@ public class ChatbotService : BackgroundService
             Console.WriteLine();
             Console.WriteLine(response.Message);
 
+            // Display next best action suggestions if present
+            if (response.SuggestedActions is { Count: > 0 })
+            {
+                Console.WriteLine();
+                Console.WriteLine("You might also want to ask:");
+                foreach (var suggestion in response.SuggestedActions)
+                {
+                    Console.WriteLine($"  - \"{suggestion.SuggestedQuestion}\"");
+                }
+            }
+
             // Show status info for debugging
             Console.WriteLine();
             Console.WriteLine($"  [Category: {response.Category}, Action: {response.RequiredAction}]");

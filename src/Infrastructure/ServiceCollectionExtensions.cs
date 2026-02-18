@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.FAQ;
+using UtilityBillingChatbot.Agents.NextBestAction;
 using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
 using UtilityBillingChatbot.Orchestration;
@@ -52,6 +53,7 @@ public static class ServiceCollectionExtensions
         services.AddAuthAgent();
         services.AddUtilityDataAgent();
         services.AddSummarizationAgent();
+        services.AddNextBestActionAgent();
 
         // Add orchestration
         services.AddOrchestration();

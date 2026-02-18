@@ -6,6 +6,7 @@ using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.FAQ;
+using UtilityBillingChatbot.Agents.NextBestAction;
 using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
 
@@ -22,6 +23,7 @@ public class ChatbotOrchestrator
     private readonly AuthAgent _authAgent;
     private readonly UtilityDataAgent _utilityDataAgent;
     private readonly SummarizationAgent _summarizationAgent;
+    private readonly NextBestActionAgent _nextBestActionAgent;
     private readonly ISessionStore _sessionStore;
     private readonly ILogger<ChatbotOrchestrator> _logger;
 
@@ -37,6 +39,7 @@ public class ChatbotOrchestrator
         AuthAgent authAgent,
         UtilityDataAgent utilityDataAgent,
         SummarizationAgent summarizationAgent,
+        NextBestActionAgent nextBestActionAgent,
         ISessionStore sessionStore,
         ILogger<ChatbotOrchestrator> logger)
     {
@@ -45,6 +48,7 @@ public class ChatbotOrchestrator
         _authAgent = authAgent;
         _utilityDataAgent = utilityDataAgent;
         _summarizationAgent = summarizationAgent;
+        _nextBestActionAgent = nextBestActionAgent;
         _sessionStore = sessionStore;
         _logger = logger;
     }
@@ -100,6 +104,13 @@ public class ChatbotOrchestrator
                 Category = QuestionCategory.OutOfScope,
                 RequiredAction = RequiredAction.None
             };
+        }
+
+        // Add next best action suggestions for successful resolutions
+        if (ShouldSuggestNextAction(response))
+        {
+            response.SuggestedActions = await GetNextBestActionsAsync(
+                session, response.Category, cancellationToken);
         }
 
         // Add response to history
@@ -482,5 +493,45 @@ public class ChatbotOrchestrator
     {
         _activeSessions.AddOrUpdate(session.SessionId, session, (_, _) => session);
         await _sessionStore.SaveSessionAsync(session, cancellationToken);
+    }
+
+    private static bool ShouldSuggestNextAction(ChatResponse response)
+    {
+        // Only for successful FAQ or AccountData resolutions
+        if (response.Category is not (QuestionCategory.BillingFAQ or QuestionCategory.AccountData))
+            return false;
+
+        // Skip if we're in the middle of auth or it failed
+        if (response.RequiredAction is RequiredAction.AuthenticationInProgress or
+            RequiredAction.AuthenticationFailed)
+            return false;
+
+        return true;
+    }
+
+    private async Task<List<SuggestedAction>?> GetNextBestActionsAsync(
+        ChatSession session,
+        QuestionCategory category,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, timeoutCts.Token);
+
+            var suggestions = await _nextBestActionAgent.SuggestAsync(
+                session.ConversationHistory,
+                category,
+                session.UserContext.IsAuthenticated,
+                linkedCts.Token);
+
+            return suggestions.Count > 0 ? suggestions : null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "NextBestActionAgent failed, continuing without suggestions");
+            return null;
+        }
     }
 }

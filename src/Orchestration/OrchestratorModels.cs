@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using UtilityBillingChatbot.Agents.Classifier;
+using UtilityBillingChatbot.Agents.NextBestAction;
 
 namespace UtilityBillingChatbot.Orchestration;
 
@@ -17,6 +18,9 @@ public class ChatResponse
 
     /// <summary>Any required action the user must take.</summary>
     public RequiredAction RequiredAction { get; set; }
+
+    /// <summary>Suggested follow-up questions (0-2 items).</summary>
+    public List<SuggestedAction>? SuggestedActions { get; set; }
 }
 
 /// <summary>

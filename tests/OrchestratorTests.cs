@@ -166,4 +166,53 @@ public class OrchestratorTests : IAsyncLifetime
             response.Message.Contains("customer service", StringComparison.OrdinalIgnoreCase),
             $"Expected handoff response when FAQ can't answer. Got: {response.Message}");
     }
+
+    [Fact]
+    public async Task Orchestrator_IncludesSuggestedActions_ForBillingFAQ()
+    {
+        var sessionId = Guid.NewGuid().ToString();
+
+        var response = await _orchestrator.ProcessMessageAsync(
+            sessionId,
+            "What are my payment options?");
+
+        Assert.Equal(QuestionCategory.BillingFAQ, response.Category);
+        Assert.Equal(RequiredAction.None, response.RequiredAction);
+
+        // NextBestActionAgent may suggest follow-up questions
+        // LLM output is non-deterministic, so we validate structure if suggestions exist
+        if (response.SuggestedActions is { Count: > 0 })
+        {
+            Assert.True(
+                response.SuggestedActions.Count <= 2,
+                $"Expected at most 2 suggestions, got {response.SuggestedActions.Count}");
+
+            // Each suggestion should have valid properties
+            foreach (var suggestion in response.SuggestedActions)
+            {
+                Assert.False(string.IsNullOrWhiteSpace(suggestion.QuestionId),
+                    "QuestionId should not be empty");
+                Assert.False(string.IsNullOrWhiteSpace(suggestion.SuggestedQuestion),
+                    "SuggestedQuestion should not be empty");
+            }
+        }
+        // If no suggestions, that's acceptable - the feature is best-effort
+    }
+
+    [Fact]
+    public async Task Orchestrator_ExcludesSuggestedActions_DuringAuthFlow()
+    {
+        var sessionId = Guid.NewGuid().ToString();
+
+        // Ask for account data (triggers auth)
+        var response = await _orchestrator.ProcessMessageAsync(
+            sessionId,
+            "What is my current balance?");
+
+        Assert.Equal(QuestionCategory.AccountData, response.Category);
+        Assert.Equal(RequiredAction.AuthenticationInProgress, response.RequiredAction);
+
+        // Should NOT include suggestions during auth flow
+        Assert.Null(response.SuggestedActions);
+    }
 }
