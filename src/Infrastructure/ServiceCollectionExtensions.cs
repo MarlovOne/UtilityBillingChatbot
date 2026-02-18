@@ -11,7 +11,6 @@ using UtilityBillingChatbot.Agents.NextBestAction;
 using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
 using UtilityBillingChatbot.Orchestration;
-using UtilityBillingChatbot.Telemetry;
 
 namespace UtilityBillingChatbot.Infrastructure;
 
@@ -29,7 +28,6 @@ public static class ServiceCollectionExtensions
     {
         // Configure options
         services.Configure<LlmOptions>(configuration.GetSection("LLM"));
-        services.Configure<TelemetryOptions>(configuration.GetSection("Telemetry"));
 
         // Load verified questions
         services.AddVerifiedQuestions(configuration);
@@ -43,9 +41,6 @@ public static class ServiceCollectionExtensions
             ApplyHuggingFaceApiKeyFallback(llmOptions);
             return ChatClientFactory.Create(llmOptions);
         });
-
-        // Add telemetry services (uses IOptions<TelemetryOptions> internally)
-        services.AddTelemetryServices(configuration);
 
         // Add agents
         services.AddClassifierAgent();

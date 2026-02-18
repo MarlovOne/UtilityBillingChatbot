@@ -50,7 +50,6 @@ src/
 │   ├── ChatClientFactory.cs
 │   ├── ChatbotService.cs
 │   └── ServiceCollectionExtensions.cs
-├── Telemetry/               # Observability (OpenTelemetry)
 ├── Data/
 │   ├── verified-questions.json
 │   └── faq-knowledge-base.md
@@ -122,13 +121,6 @@ All agents return typed results via JSON schema validation:
 var response = await _agent.RunAsync<QuestionClassification>(input);
 // Handle with TryGetResult pattern for JSON parse errors
 ```
-
-## Telemetry
-
-OpenTelemetry enabled by default. Configure in `appsettings.json`:
-- `Telemetry.Enabled`: Toggle all telemetry
-- `Telemetry.EnableConsoleExporter`: Local dev visibility
-- `Telemetry.OtlpEndpoint`: Production export (or `OTEL_EXPORTER_OTLP_ENDPOINT` env var)
 
 ## Staged Implementation
 
