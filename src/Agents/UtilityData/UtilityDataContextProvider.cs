@@ -3,6 +3,7 @@
 using System.ComponentModel;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Auth;
 
 namespace UtilityBillingChatbot.Agents.UtilityData;
@@ -14,10 +15,12 @@ namespace UtilityBillingChatbot.Agents.UtilityData;
 public sealed class UtilityDataContextProvider : AIContextProvider
 {
     private readonly UtilityCustomer _customer;
+    private readonly ILogger<UtilityDataContextProvider>? _logger;
 
-    public UtilityDataContextProvider(UtilityCustomer customer)
+    public UtilityDataContextProvider(UtilityCustomer customer, ILogger<UtilityDataContextProvider>? logger = null)
     {
         _customer = customer;
+        _logger = logger;
     }
 
     /// <summary>
@@ -51,8 +54,8 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             You are a utility billing customer service assistant helping {_customer.Name}
             with their account ({_customer.AccountNumber}) at {_customer.ServiceAddress}.
 
-            You have access to tools to look up account information. Use them to answer
-            the customer's questions accurately.
+            You have access to tools to look up account information and make payments.
+            Use them to answer the customer's questions accurately.
 
             GUIDELINES:
             - Be helpful and professional
@@ -60,6 +63,7 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             - Format currency amounts clearly (e.g., $187.43)
             - When discussing dates, be specific (e.g., "February 15, 2024")
             - Keep responses concise but complete
+            - For payments, use the MakePayment tool with the customer's current balance
             - Set foundAnswer to true if you can answer using your available tools
             - Set foundAnswer to false if the question is outside your capabilities
               (e.g., service changes, complaints, technical issues, rate changes)
@@ -68,6 +72,9 @@ public sealed class UtilityDataContextProvider : AIContextProvider
 
     private List<AITool> BuildTools()
     {
+        var paymentTool = AIFunctionFactory.Create(MakePayment,
+            description: "Submit a payment for the customer's outstanding balance");
+
         return
         [
             AIFunctionFactory.Create(GetAccountBalance,
@@ -85,7 +92,10 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             AIFunctionFactory.Create(GetMeterReadType,
                 description: "Check if the last meter read was actual or estimated"),
             AIFunctionFactory.Create(GetBillingHistory,
-                description: "Get a list of recent bills")
+                description: "Get a list of recent bills"),
+#pragma warning disable MEAI001 // ApprovalRequiredAIFunction is experimental
+            new ApprovalRequiredAIFunction(paymentTool)
+#pragma warning restore MEAI001
         ];
     }
 
@@ -285,6 +295,23 @@ public sealed class UtilityDataContextProvider : AIContextProvider
         return new BillingHistoryResult(
             Bills: bills,
             TotalBills: bills.Count);
+    }
+
+    [Description("Submit a payment for the customer's outstanding balance")]
+    public PaymentResult MakePayment(
+        [Description("Amount to pay in dollars")] decimal amount,
+        [Description("Bill period being paid (e.g., 'February 2024')")] string billingPeriod)
+    {
+        _logger?.LogInformation(
+            "Payment submitted: ${Amount} for {Period} by {Customer} ({Account})",
+            amount, billingPeriod, _customer.Name, _customer.AccountNumber);
+
+        return new PaymentResult(
+            Success: true,
+            Amount: amount,
+            BillingPeriod: billingPeriod,
+            ConfirmationNumber: Guid.NewGuid().ToString()[..8].ToUpperInvariant(),
+            Message: $"Payment of ${amount:F2} for {billingPeriod} has been submitted successfully.");
     }
 
     #endregion

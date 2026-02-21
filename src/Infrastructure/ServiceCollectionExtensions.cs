@@ -55,6 +55,7 @@ public static class ServiceCollectionExtensions
         services.AddNextBestActionAgent();
 
         // Add orchestration
+        services.AddSingleton<IApprovalHandler, ConsoleApprovalHandler>();
         services.AddOrchestration();
 
         // Add the chatbot background service

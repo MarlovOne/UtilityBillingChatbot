@@ -87,3 +87,13 @@ public record BillSummary(
     string FormattedAmount,
     int KwhUsage,
     DateOnly BillDate);
+
+/// <summary>
+/// Result from MakePayment tool.
+/// </summary>
+public record PaymentResult(
+    bool Success,
+    decimal Amount,
+    string BillingPeriod,
+    string ConfirmationNumber,
+    string Message);

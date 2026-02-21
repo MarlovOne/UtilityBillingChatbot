@@ -17,15 +17,18 @@ public class UtilityDataAgent
 {
     private readonly IChatClient _chatClient;
     private readonly MockCISDatabase _cisDatabase;
+    private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<UtilityDataAgent> _logger;
 
     public UtilityDataAgent(
         IChatClient chatClient,
         MockCISDatabase cisDatabase,
+        ILoggerFactory loggerFactory,
         ILogger<UtilityDataAgent> logger)
     {
         _chatClient = chatClient;
         _cisDatabase = cisDatabase;
+        _loggerFactory = loggerFactory;
         _logger = logger;
     }
 
@@ -99,7 +102,9 @@ public class UtilityDataAgent
         var customer = _cisDatabase.FindByIdentifier(customerId)
             ?? throw new InvalidOperationException($"Customer {customerId} not found in CIS database");
 
-        var provider = new UtilityDataContextProvider(customer);
+        var provider = new UtilityDataContextProvider(
+            customer,
+            _loggerFactory.CreateLogger<UtilityDataContextProvider>());
 
         var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
         {

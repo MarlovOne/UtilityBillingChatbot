@@ -2,6 +2,8 @@
 
 using System.Collections.Concurrent;
 using System.Text;
+using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
@@ -25,6 +27,7 @@ public class ChatbotOrchestrator
     private readonly SummarizationAgent _summarizationAgent;
     private readonly NextBestActionAgent _nextBestActionAgent;
     private readonly ISessionStore _sessionStore;
+    private readonly IApprovalHandler _approvalHandler;
     private readonly ILogger<ChatbotOrchestrator> _logger;
 
     // Cache for active sessions to avoid constant store lookups
@@ -41,6 +44,7 @@ public class ChatbotOrchestrator
         SummarizationAgent summarizationAgent,
         NextBestActionAgent nextBestActionAgent,
         ISessionStore sessionStore,
+        IApprovalHandler approvalHandler,
         ILogger<ChatbotOrchestrator> logger)
     {
         _classifierAgent = classifierAgent;
@@ -50,6 +54,7 @@ public class ChatbotOrchestrator
         _summarizationAgent = summarizationAgent;
         _nextBestActionAgent = nextBestActionAgent;
         _sessionStore = sessionStore;
+        _approvalHandler = approvalHandler;
         _logger = logger;
     }
 
@@ -212,13 +217,28 @@ public class ChatbotOrchestrator
     {
         try
         {
-            var dataResponse = await _utilityDataAgent.RunAsync(
-                userMessage,
-                authSession: session.AuthSession,
-                cancellationToken: cancellationToken);
+            // Create or get the UtilityData session
+            var utilitySession = session.UtilityDataSession;
+            if (utilitySession is null)
+            {
+                utilitySession = await _utilityDataAgent.CreateSessionAsync(
+                    session.AuthSession!,
+                    cancellationToken);
+                session.UtilityDataSession = utilitySession;
+            }
+
+            // Run the agent
+            var response = await utilitySession.Agent.RunAsync<UtilityDataStructuredOutput>(
+                message: userMessage,
+                session: utilitySession.AgentSession);
+
+            // Handle approval requests
+            response = await HandleApprovalRequestsAsync(utilitySession, response, cancellationToken);
+
+            var output = response.Result;
 
             // If the UtilityData agent can't answer, escalate to human
-            if (!dataResponse.FoundAnswer)
+            if (output is null || !output.FoundAnswer)
             {
                 _logger.LogInformation("UtilityData agent cannot answer (FoundAnswer=false), escalating to human");
                 return await InitiateHumanHandoffAsync(
@@ -230,7 +250,7 @@ public class ChatbotOrchestrator
 
             return new ChatResponse
             {
-                Message = dataResponse.Text,
+                Message = output.Response,
                 Category = QuestionCategory.AccountData,
                 RequiredAction = RequiredAction.None
             };
@@ -241,9 +261,81 @@ public class ChatbotOrchestrator
             // Session may have expired, need to re-auth
             session.UserContext.AuthState = AuthenticationState.Expired;
             session.AuthSession = null;
+            session.UtilityDataSession = null;
             return await InitiateAuthenticationFlowAsync(session, userMessage, cancellationToken);
         }
     }
+
+#pragma warning disable MEAI001 // FunctionApprovalRequestContent is experimental
+    private async Task<ChatClientAgentResponse<UtilityDataStructuredOutput>> HandleApprovalRequestsAsync(
+        UtilityDataSession utilitySession,
+        ChatClientAgentResponse<UtilityDataStructuredOutput> response,
+        CancellationToken cancellationToken)
+    {
+        // Extract UserInputRequestContent items from messages
+        // Note: UserInputRequests property is not yet in released package,
+        // so we implement the same logic inline
+        var userInputRequests = response.Messages
+            .SelectMany(m => m.Contents)
+            .OfType<UserInputRequestContent>()
+            .ToList();
+
+        while (userInputRequests.Count > 0)
+        {
+            var approvalMessages = new List<ChatMessage>();
+
+            foreach (var request in userInputRequests.OfType<FunctionApprovalRequestContent>())
+            {
+                var prompt = FormatApprovalPrompt(request);
+                var approved = await _approvalHandler.RequestApprovalAsync(prompt, cancellationToken);
+
+                _logger.LogInformation("Payment approval: {Approved} for {Tool}",
+                    approved, request.FunctionCall.Name);
+
+                approvalMessages.Add(new ChatMessage(ChatRole.User, [request.CreateResponse(approved)]));
+            }
+
+            if (approvalMessages.Count > 0)
+            {
+                response = await utilitySession.Agent.RunAsync<UtilityDataStructuredOutput>(
+                    approvalMessages,
+                    utilitySession.AgentSession);
+
+                userInputRequests = response.Messages
+                    .SelectMany(m => m.Contents)
+                    .OfType<UserInputRequestContent>()
+                    .ToList();
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return response;
+    }
+
+    private static string FormatApprovalPrompt(FunctionApprovalRequestContent request)
+    {
+        var functionName = request.FunctionCall.Name;
+        var args = request.FunctionCall.Arguments;
+
+        // Handle known approval-required tools by name
+        if (functionName == "MakePayment" && args is not null)
+        {
+            if (args.TryGetValue("amount", out var amountObj) &&
+                args.TryGetValue("billingPeriod", out var periodObj))
+            {
+                var amount = Convert.ToDecimal(amountObj);
+                var period = periodObj?.ToString() ?? "unknown period";
+                return $"I'm about to submit a payment of ${amount:F2} for {period}. Should I proceed?";
+            }
+        }
+
+        // Generic fallback for unknown tools
+        return $"I need your approval to proceed with {functionName}. Should I continue?";
+    }
+#pragma warning restore MEAI001
 
     private async Task<ChatResponse> InitiateAuthenticationFlowAsync(
         ChatSession session,

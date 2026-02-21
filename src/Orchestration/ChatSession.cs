@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using UtilityBillingChatbot.Agents.Auth;
+using UtilityBillingChatbot.Agents.UtilityData;
 
 namespace UtilityBillingChatbot.Orchestration;
 
@@ -21,6 +22,9 @@ public class ChatSession
 
     /// <summary>Active authentication session, if auth flow is in progress.</summary>
     public AuthSession? AuthSession { get; set; }
+
+    /// <summary>Active utility data session for account queries.</summary>
+    public UtilityDataSession? UtilityDataSession { get; set; }
 
     /// <summary>
     /// Query that was pending before authentication started.
