@@ -2,7 +2,6 @@
 
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using UtilityBillingChatbot.Orchestration;
 
 namespace UtilityBillingChatbot.Infrastructure;
@@ -13,7 +12,7 @@ namespace UtilityBillingChatbot.Infrastructure;
 public class ChatbotService : BackgroundService
 {
     private readonly ChatbotOrchestrator _orchestrator;
-    private readonly LlmOptions _llmOptions;
+    private readonly LlmProviderInfo _providerInfo;
     private readonly ILogger<ChatbotService> _logger;
 
     // Session ID for this console session
@@ -21,11 +20,11 @@ public class ChatbotService : BackgroundService
 
     public ChatbotService(
         ChatbotOrchestrator orchestrator,
-        IOptions<LlmOptions> llmOptions,
+        LlmProviderInfo providerInfo,
         ILogger<ChatbotService> logger)
     {
         _orchestrator = orchestrator;
-        _llmOptions = llmOptions.Value;
+        _providerInfo = providerInfo;
         _logger = logger;
     }
 
@@ -75,17 +74,9 @@ public class ChatbotService : BackgroundService
 
     private void PrintStartupInfo()
     {
-        Console.WriteLine($"Using {_llmOptions.Provider}: {GetModelName()}");
+        Console.WriteLine($"Using {_providerInfo.ProviderName}: {_providerInfo.ModelDisplayName}");
         Console.WriteLine();
     }
-
-    private string GetModelName() => _llmOptions.Provider switch
-    {
-        "AzureOpenAI" => _llmOptions.AzureOpenAI?.DeploymentName ?? "unknown",
-        "OpenAI" => _llmOptions.OpenAI?.Model ?? "unknown",
-        "HuggingFace" => _llmOptions.HuggingFace?.Model ?? "unknown",
-        _ => "unknown"
-    };
 
     private async Task HandleUserInputAsync(string input, CancellationToken cancellationToken)
     {

@@ -3,32 +3,6 @@
 namespace UtilityBillingChatbot.Infrastructure;
 
 /// <summary>
-/// Configuration options for LLM providers
-/// </summary>
-public class LlmOptions
-{
-    /// <summary>
-    /// The LLM provider to use: "AzureOpenAI", "OpenAI", or "HuggingFace"
-    /// </summary>
-    public string Provider { get; set; } = "OpenAI";
-
-    /// <summary>
-    /// Azure OpenAI configuration
-    /// </summary>
-    public AzureOpenAIOptions? AzureOpenAI { get; set; }
-
-    /// <summary>
-    /// OpenAI configuration
-    /// </summary>
-    public OpenAIOptions? OpenAI { get; set; }
-
-    /// <summary>
-    /// HuggingFace configuration
-    /// </summary>
-    public HuggingFaceOptions? HuggingFace { get; set; }
-}
-
-/// <summary>
 /// Azure OpenAI configuration options
 /// </summary>
 public class AzureOpenAIOptions

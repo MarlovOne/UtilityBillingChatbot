@@ -10,6 +10,7 @@ using UtilityBillingChatbot.Agents.FAQ;
 using UtilityBillingChatbot.Agents.NextBestAction;
 using UtilityBillingChatbot.Agents.Summarization;
 using UtilityBillingChatbot.Agents.UtilityData;
+using UtilityBillingChatbot.Infrastructure.Providers;
 using UtilityBillingChatbot.Orchestration;
 using UtilityBillingChatbot.Telemetry;
 
@@ -27,24 +28,30 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         IConfiguration configuration)
     {
-        // Configure options
-        services.Configure<LlmOptions>(configuration.GetSection("LLM"));
-
         // Add OpenTelemetry observability
         services.AddOpenTelemetryObservability(configuration);
 
         // Load verified questions
         services.AddVerifiedQuestions(configuration);
 
-        // Add chat client
-        services.AddSingleton(sp =>
-        {
-            var llmOptions = configuration.GetSection("LLM").Get<LlmOptions>()
-                ?? throw new InvalidOperationException("LLM configuration not found");
+        // Register LLM providers
+        services.AddSingleton<ILlmProvider, OpenAIProvider>();
+        services.AddSingleton<ILlmProvider, AzureOpenAIProvider>();
+        services.AddSingleton<ILlmProvider, HuggingFaceProvider>();
 
-            ApplyHuggingFaceApiKeyFallback(llmOptions);
-            return ChatClientFactory.Create(llmOptions);
+        // Keyed IChatClient: any provider name works (e.g. [FromKeyedServices("AzureOpenAI")])
+        services.AddKeyedSingleton<IChatClient>(KeyedService.AnyKey, (sp, key) =>
+            CreateChatClient(sp, (string)key!));
+
+        // Default (unkeyed) IChatClient resolves to the configured LLM:Default provider
+        services.AddSingleton<LlmProviderInfo>(sp =>
+        {
+            var provider = ResolveProvider(sp, GetDefaultProviderName(sp));
+            return new LlmProviderInfo(provider.Name, provider.ModelDisplayName);
         });
+
+        services.AddSingleton<IChatClient>(sp =>
+            CreateChatClient(sp, GetDefaultProviderName(sp)));
 
         // Add agents
         services.AddClassifierAgent();
@@ -63,6 +70,27 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
+    private static string GetDefaultProviderName(IServiceProvider sp) =>
+        sp.GetRequiredService<IConfiguration>()[$"{ILlmProvider.ConfigSection}:Default"] ?? "OpenAI";
+
+    private static ILlmProvider ResolveProvider(IServiceProvider sp, string providerName)
+    {
+        var providers = sp.GetRequiredService<IEnumerable<ILlmProvider>>();
+        return providers.FirstOrDefault(p =>
+                   string.Equals(p.Name, providerName, StringComparison.OrdinalIgnoreCase))
+               ?? throw new InvalidOperationException(
+                   $"Unknown LLM provider '{providerName}'. " +
+                   $"Available: {string.Join(", ", providers.Select(p => p.Name))}");
+    }
+
+    private static IChatClient CreateChatClient(IServiceProvider sp, string providerName) =>
+        ResolveProvider(sp, providerName).CreateClient()
+            .AsBuilder()
+            .UseOpenTelemetry(
+                sourceName: TelemetryServiceCollectionExtensions.ServiceName,
+                configure: cfg => cfg.EnableSensitiveData = false)
+            .Build();
 
     /// <summary>
     /// Loads verified questions from JSON and registers them as a singleton.
@@ -85,16 +113,5 @@ public static class ServiceCollectionExtensions
         });
 
         return services;
-    }
-
-    private static void ApplyHuggingFaceApiKeyFallback(LlmOptions llmOptions)
-    {
-        if (llmOptions.HuggingFace is not null && string.IsNullOrEmpty(llmOptions.HuggingFace.ApiKey))
-        {
-            llmOptions.HuggingFace.ApiKey =
-                Environment.GetEnvironmentVariable("HF_TOKEN") ??
-                Environment.GetEnvironmentVariable("HUGGINGFACE_API_KEY") ??
-                Environment.GetEnvironmentVariable("HUGGINGFACE_TOKEN");
-        }
     }
 }
