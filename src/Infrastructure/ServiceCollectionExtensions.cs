@@ -41,17 +41,11 @@ public static class ServiceCollectionExtensions
 
         // Keyed IChatClient: any provider name works (e.g. [FromKeyedServices("AzureOpenAI")])
         services.AddKeyedSingleton<IChatClient>(KeyedService.AnyKey, (sp, key) =>
-            CreateChatClient(sp, (string)key!));
+            CreateChatClient(sp, (string)key!, GetDefaultModel(sp)));
 
-        // Default (unkeyed) IChatClient resolves to the configured LLM:Default provider
-        services.AddSingleton<LlmProviderInfo>(sp =>
-        {
-            var provider = ResolveProvider(sp, GetDefaultProviderName(sp));
-            return new LlmProviderInfo(provider.Name, provider.ModelDisplayName);
-        });
-
+        // Default (unkeyed) IChatClient resolves to the configured default provider + model
         services.AddSingleton<IChatClient>(sp =>
-            CreateChatClient(sp, GetDefaultProviderName(sp)));
+            CreateChatClient(sp, GetDefaultProviderName(sp), GetDefaultModel(sp)));
 
         // Add agents
         services.AddClassifierAgent();
@@ -72,7 +66,25 @@ public static class ServiceCollectionExtensions
     }
 
     private static string GetDefaultProviderName(IServiceProvider sp) =>
-        sp.GetRequiredService<IConfiguration>()[$"{ILlmProvider.ConfigSection}:Default"] ?? "OpenAI";
+        sp.GetRequiredService<IConfiguration>()[$"{ILlmProvider.ConfigSection}:DefaultProvider"] ?? "OpenAI";
+
+    internal static string GetDefaultModel(IServiceProvider sp) =>
+        sp.GetRequiredService<IConfiguration>()[$"{ILlmProvider.ConfigSection}:DefaultModel"] ?? "gpt-4o-mini";
+
+    /// <summary>
+    /// Resolves an IChatClient for a specific agent, using per-agent provider/model overrides
+    /// from LLM:AgentProviders:{agentName}, falling back to the global defaults.
+    /// </summary>
+    internal static IChatClient GetAgentChatClient(IServiceProvider sp, string agentName)
+    {
+        var config = sp.GetRequiredService<IConfiguration>();
+        var agentSection = config.GetSection($"{ILlmProvider.ConfigSection}:AgentProviders:{agentName}");
+
+        var providerName = agentSection["Provider"] ?? GetDefaultProviderName(sp);
+        var model = agentSection["Model"] ?? GetDefaultModel(sp);
+
+        return CreateChatClient(sp, providerName, model);
+    }
 
     private static ILlmProvider ResolveProvider(IServiceProvider sp, string providerName)
     {
@@ -84,8 +96,8 @@ public static class ServiceCollectionExtensions
                    $"Available: {string.Join(", ", providers.Select(p => p.Name))}");
     }
 
-    private static IChatClient CreateChatClient(IServiceProvider sp, string providerName) =>
-        ResolveProvider(sp, providerName).CreateClient()
+    private static IChatClient CreateChatClient(IServiceProvider sp, string providerName, string model) =>
+        ResolveProvider(sp, providerName).CreateClient(model)
             .AsBuilder()
             .UseOpenTelemetry(
                 sourceName: TelemetryServiceCollectionExtensions.ServiceName,

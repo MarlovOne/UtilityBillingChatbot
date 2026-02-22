@@ -5,6 +5,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.Auth;
 
@@ -120,7 +121,8 @@ public static class AuthAgentExtensions
     public static IServiceCollection AddAuthAgent(this IServiceCollection services)
     {
         services.AddSingleton<MockCISDatabase>();
-        services.AddSingleton<AuthAgent>();
+        services.AddSingleton(sp =>
+            ActivatorUtilities.CreateInstance<AuthAgent>(sp, GetAgentChatClient(sp, "Auth")));
         return services;
     }
 }

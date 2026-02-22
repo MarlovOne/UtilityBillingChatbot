@@ -5,13 +5,12 @@ using Microsoft.Extensions.Configuration;
 
 namespace UtilityBillingChatbot.Infrastructure.Providers;
 
-public class OpenAIProvider(IConfiguration configuration) : LlmProviderBase<OpenAIOptions>(configuration)
+public class OpenAIProvider(IConfiguration configuration) : ILlmProvider
 {
-    public override string Name => "OpenAI";
+    public string Name => "OpenAI";
+    public LlmProviderOptions Options { get; } = ILlmProvider.BindOptions(configuration, "OpenAI");
 
-    public override string ModelDisplayName => Options.Model;
-
-    public override IChatClient CreateClient()
+    public IChatClient CreateClient(string model)
     {
         if (string.IsNullOrEmpty(Options.ApiKey))
             throw new InvalidOperationException("OpenAI ApiKey is required.");
@@ -32,6 +31,6 @@ public class OpenAIProvider(IConfiguration configuration) : LlmProviderBase<Open
             client = new OpenAI.OpenAIClient(Options.ApiKey);
         }
 
-        return client.GetChatClient(Options.Model).AsIChatClient();
+        return client.GetChatClient(model).AsIChatClient();
     }
 }

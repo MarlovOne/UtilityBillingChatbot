@@ -5,13 +5,12 @@ using Microsoft.Extensions.Configuration;
 
 namespace UtilityBillingChatbot.Infrastructure.Providers;
 
-public class HuggingFaceProvider(IConfiguration configuration) : LlmProviderBase<HuggingFaceOptions>(configuration)
+public class HuggingFaceProvider(IConfiguration configuration) : ILlmProvider
 {
-    public override string Name => "HuggingFace";
+    public string Name => "HuggingFace";
+    public LlmProviderOptions Options { get; } = ILlmProvider.BindOptions(configuration, "HuggingFace");
 
-    public override string ModelDisplayName => Options.Model;
-
-    public override IChatClient CreateClient()
+    public IChatClient CreateClient(string model)
     {
         // Env var fallback for API key
         if (string.IsNullOrEmpty(Options.ApiKey))
@@ -25,7 +24,7 @@ public class HuggingFaceProvider(IConfiguration configuration) : LlmProviderBase
         if (string.IsNullOrEmpty(Options.ApiKey))
             throw new InvalidOperationException("HuggingFace ApiKey is required (config or HF_TOKEN env var).");
 
-        var endpointStr = Options.Endpoint;
+        var endpointStr = Options.Endpoint ?? "https://api-inference.huggingface.co/v1/";
         if (!endpointStr.EndsWith("/v1/", StringComparison.Ordinal) &&
             !endpointStr.EndsWith("/v1", StringComparison.Ordinal))
         {
@@ -41,6 +40,6 @@ public class HuggingFaceProvider(IConfiguration configuration) : LlmProviderBase
             new System.ClientModel.ApiKeyCredential(Options.ApiKey),
             clientOptions);
 
-        return client.GetChatClient(Options.Model).AsIChatClient();
+        return client.GetChatClient(model).AsIChatClient();
     }
 }

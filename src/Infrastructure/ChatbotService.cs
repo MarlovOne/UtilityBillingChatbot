@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
 
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Orchestration;
@@ -12,7 +13,7 @@ namespace UtilityBillingChatbot.Infrastructure;
 public class ChatbotService : BackgroundService
 {
     private readonly ChatbotOrchestrator _orchestrator;
-    private readonly LlmProviderInfo _providerInfo;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<ChatbotService> _logger;
 
     // Session ID for this console session
@@ -20,11 +21,11 @@ public class ChatbotService : BackgroundService
 
     public ChatbotService(
         ChatbotOrchestrator orchestrator,
-        LlmProviderInfo providerInfo,
+        IConfiguration configuration,
         ILogger<ChatbotService> logger)
     {
         _orchestrator = orchestrator;
-        _providerInfo = providerInfo;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -74,7 +75,9 @@ public class ChatbotService : BackgroundService
 
     private void PrintStartupInfo()
     {
-        Console.WriteLine($"Using {_providerInfo.ProviderName}: {_providerInfo.ModelDisplayName}");
+        var provider = _configuration[$"{ILlmProvider.ConfigSection}:DefaultProvider"] ?? "OpenAI";
+        var model = _configuration[$"{ILlmProvider.ConfigSection}:DefaultModel"] ?? "gpt-4o-mini";
+        Console.WriteLine($"Using {provider}: {model}");
         Console.WriteLine();
     }
 

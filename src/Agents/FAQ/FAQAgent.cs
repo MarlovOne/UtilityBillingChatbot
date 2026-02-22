@@ -5,6 +5,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.FAQ;
 
@@ -124,10 +125,7 @@ public static class FAQAgentExtensions
     {
         services.AddSingleton(sp =>
         {
-            var chatClient = sp.GetRequiredService<IChatClient>();
-            var logger = sp.GetRequiredService<ILogger<FAQAgent>>();
             var config = sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
-
             var knowledgeBasePath = config["FAQKnowledgeBasePath"] ?? "Data/faq-knowledge-base.md";
             if (!Path.IsPathRooted(knowledgeBasePath))
             {
@@ -135,7 +133,8 @@ public static class FAQAgentExtensions
             }
 
             var knowledgeBase = File.ReadAllText(knowledgeBasePath);
-            return new FAQAgent(chatClient, knowledgeBase, logger);
+            return ActivatorUtilities.CreateInstance<FAQAgent>(sp,
+                GetAgentChatClient(sp, "FAQ"), knowledgeBase);
         });
 
         return services;

@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Infrastructure;
 using UtilityBillingChatbot.Orchestration;
+using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.NextBestAction;
 
@@ -183,7 +184,8 @@ public static class NextBestActionAgentExtensions
     /// </summary>
     public static IServiceCollection AddNextBestActionAgent(this IServiceCollection services)
     {
-        services.AddSingleton<NextBestActionAgent>();
+        services.AddSingleton(sp =>
+            ActivatorUtilities.CreateInstance<NextBestActionAgent>(sp, GetAgentChatClient(sp, "NextBestAction")));
         return services;
     }
 }

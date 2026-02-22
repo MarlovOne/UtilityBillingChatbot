@@ -6,6 +6,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Auth;
+using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.UtilityData;
 
@@ -166,7 +167,8 @@ public static class UtilityDataAgentExtensions
     public static IServiceCollection AddUtilityDataAgent(this IServiceCollection services)
     {
         // Note: MockCISDatabase is already registered by AddAuthAgent
-        services.AddSingleton<UtilityDataAgent>();
+        services.AddSingleton(sp =>
+            ActivatorUtilities.CreateInstance<UtilityDataAgent>(sp, GetAgentChatClient(sp, "UtilityData")));
         return services;
     }
 }

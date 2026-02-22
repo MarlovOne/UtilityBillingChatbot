@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Infrastructure;
+using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.Classifier;
 
@@ -98,7 +99,8 @@ public static class ClassifierAgentExtensions
     /// </summary>
     public static IServiceCollection AddClassifierAgent(this IServiceCollection services)
     {
-        services.AddSingleton<ClassifierAgent>();
+        services.AddSingleton(sp =>
+            ActivatorUtilities.CreateInstance<ClassifierAgent>(sp, GetAgentChatClient(sp, "Classifier")));
         return services;
     }
 }

@@ -22,38 +22,23 @@ public interface ILlmProvider
     string Name { get; }
 
     /// <summary>
-    /// Display name for the model (e.g. "gpt-4o-mini").
+    /// Connection options (ApiKey, Endpoint) bound from LLM:{Name}.
     /// </summary>
-    string ModelDisplayName { get; }
+    LlmProviderOptions Options { get; }
 
     /// <summary>
     /// Creates a raw <see cref="IChatClient"/> without OTel wrapping.
-    /// Validation happens here, not in the constructor.
     /// </summary>
-    IChatClient CreateClient();
-}
+    /// <param name="model">The model identifier to use (e.g. "gpt-4o-mini").</param>
+    IChatClient CreateClient(string model);
 
-/// <summary>
-/// Base class for LLM providers. Binds <typeparamref name="TOptions"/> once from
-/// the provider's config section (LLM:{Name}) and exposes it via <see cref="Options"/>.
-/// </summary>
-public abstract class LlmProviderBase<TOptions> : ILlmProvider where TOptions : new()
-{
-    private readonly Lazy<TOptions> _options;
-
-    protected LlmProviderBase(IConfiguration configuration)
+    /// <summary>
+    /// Binds <see cref="LlmProviderOptions"/> from the provider's config section (LLM:{providerName}).
+    /// </summary>
+    static LlmProviderOptions BindOptions(IConfiguration configuration, string providerName)
     {
-        _options = new Lazy<TOptions>(() =>
-        {
-            var options = new TOptions();
-            configuration.GetSection($"{ILlmProvider.ConfigSection}:{Name}").Bind(options);
-            return options;
-        });
+        var options = new LlmProviderOptions();
+        configuration.GetSection($"{ConfigSection}:{providerName}").Bind(options);
+        return options;
     }
-
-    protected TOptions Options => _options.Value;
-
-    public abstract string Name { get; }
-    public abstract string ModelDisplayName { get; }
-    public abstract IChatClient CreateClient();
 }

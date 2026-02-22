@@ -5,6 +5,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Infrastructure;
+using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.Summarization;
 
@@ -125,7 +126,8 @@ public static class SummarizationAgentExtensions
     /// </summary>
     public static IServiceCollection AddSummarizationAgent(this IServiceCollection services)
     {
-        services.AddSingleton<SummarizationAgent>();
+        services.AddSingleton(sp =>
+            ActivatorUtilities.CreateInstance<SummarizationAgent>(sp, GetAgentChatClient(sp, "Summarization")));
         return services;
     }
 }

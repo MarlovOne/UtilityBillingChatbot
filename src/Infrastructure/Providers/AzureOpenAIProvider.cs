@@ -5,13 +5,12 @@ using Microsoft.Extensions.Configuration;
 
 namespace UtilityBillingChatbot.Infrastructure.Providers;
 
-public class AzureOpenAIProvider(IConfiguration configuration) : LlmProviderBase<AzureOpenAIOptions>(configuration)
+public class AzureOpenAIProvider(IConfiguration configuration) : ILlmProvider
 {
-    public override string Name => "AzureOpenAI";
+    public string Name => "AzureOpenAI";
+    public LlmProviderOptions Options { get; } = ILlmProvider.BindOptions(configuration, "AzureOpenAI");
 
-    public override string ModelDisplayName => Options.DeploymentName;
-
-    public override IChatClient CreateClient()
+    public IChatClient CreateClient(string model)
     {
         if (string.IsNullOrEmpty(Options.Endpoint))
             throw new InvalidOperationException("AzureOpenAI Endpoint is required.");
@@ -22,6 +21,6 @@ public class AzureOpenAIProvider(IConfiguration configuration) : LlmProviderBase
             new Uri(Options.Endpoint),
             new System.ClientModel.ApiKeyCredential(Options.ApiKey));
 
-        return client.GetChatClient(Options.DeploymentName).AsIChatClient();
+        return client.GetChatClient(model).AsIChatClient();
     }
 }
