@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using UtilityBillingChatbot.Agents.Auth;
+using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.UtilityData;
 
 namespace UtilityBillingChatbot.Orchestration;
@@ -31,6 +32,12 @@ public class ChatSession
     /// Will be answered after successful authentication.
     /// </summary>
     public string? PendingQuery { get; set; }
+
+    /// <summary>Category from the last processed message (for post-stream actions).</summary>
+    public QuestionCategory? LastCategory { get; set; }
+
+    /// <summary>Required action from the last processed message.</summary>
+    public RequiredAction LastRequiredAction { get; set; }
 
     /// <summary>When this session was created.</summary>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;

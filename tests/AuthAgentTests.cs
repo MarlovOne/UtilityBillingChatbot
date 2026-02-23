@@ -3,6 +3,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using UtilityBillingChatbot.Agents;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Infrastructure;
 
@@ -43,66 +44,81 @@ public class AuthAgentTests : IAsyncLifetime
     [Fact]
     public async Task AuthAgent_FindsCustomer_ByPhone()
     {
-        // Act
-        var response1 = await _authAgent.RunAsync("I want to check my bill");
-        var response2 = await _authAgent.RunAsync("555-1234", response1.Session);
+        var session = await _authAgent.CreateSessionAsync();
 
-        // Assert
-        Assert.Equal(AuthenticationState.Verifying, response2.AuthState);
-        Assert.Equal("John Smith", response2.CustomerName);
-        Assert.Equal("1234567890", response2.CustomerId);
+        var (text1, meta1) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("I want to check my bill", session));
+        var (text2, meta2) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("555-1234", session));
+
+        Assert.Equal(AuthenticationState.Verifying, meta2.State);
+        Assert.Equal("John Smith", meta2.CustomerName);
+        Assert.Equal("1234567890", meta2.CustomerId);
     }
 
     [Fact]
     public async Task AuthAgent_Authenticates_WithCorrectSSN()
     {
-        // Act
-        var r1 = await _authAgent.RunAsync("I need help with my account");
-        var r2 = await _authAgent.RunAsync("555-1234", r1.Session);
-        var r3 = await _authAgent.RunAsync("1234", r2.Session);
+        var session = await _authAgent.CreateSessionAsync();
 
-        // Assert
-        Assert.True(r3.IsAuthenticated);
-        Assert.Equal("John Smith", r3.CustomerName);
+        var (_, m1) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("I need help with my account", session));
+        var (_, m2) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("555-1234", session));
+        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("1234", session));
+
+        Assert.Equal(AuthenticationState.Authenticated, m3.State);
+        Assert.Equal("John Smith", m3.CustomerName);
     }
 
     [Fact]
     public async Task AuthAgent_LocksOut_AfterThreeFailures()
     {
-        // Act
-        var r1 = await _authAgent.RunAsync("Check my bill");
-        var r2 = await _authAgent.RunAsync("555-1234", r1.Session);
-        var r3 = await _authAgent.RunAsync("0000", r2.Session);  // Wrong
-        var r4 = await _authAgent.RunAsync("1111", r3.Session);  // Wrong
-        var r5 = await _authAgent.RunAsync("2222", r4.Session);  // Wrong
+        var session = await _authAgent.CreateSessionAsync();
 
-        // Assert
-        Assert.Equal(AuthenticationState.LockedOut, r5.AuthState);
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("Check my bill", session));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("555-1234", session));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("0000", session));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("1111", session));
+        var (_, m5) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("2222", session));
+
+        Assert.Equal(AuthenticationState.LockedOut, m5.State);
     }
 
     [Fact]
     public async Task AuthAgent_FindsCustomer_ByEmail()
     {
-        // Act
-        var r1 = await _authAgent.RunAsync("Help with my account");
-        var r2 = await _authAgent.RunAsync("maria.garcia@example.com", r1.Session);
+        var session = await _authAgent.CreateSessionAsync();
 
-        // Assert
-        Assert.Equal(AuthenticationState.Verifying, r2.AuthState);
-        Assert.Equal("Maria Garcia", r2.CustomerName);
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("Help with my account", session));
+        var (_, m2) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("maria.garcia@example.com", session));
+
+        Assert.Equal(AuthenticationState.Verifying, m2.State);
+        Assert.Equal("Maria Garcia", m2.CustomerName);
     }
 
     [Fact]
     public async Task AuthAgent_FullFlow_PhoneAndSSN()
     {
-        // Act
-        var r1 = await _authAgent.RunAsync("Did you receive my payment?");
-        var r2 = await _authAgent.RunAsync("My phone number is 555-1234", r1.Session);
-        var r3 = await _authAgent.RunAsync("The last 4 digits are 1234", r2.Session);
+        var session = await _authAgent.CreateSessionAsync();
 
-        // Assert
-        Assert.True(r3.IsAuthenticated);
-        Assert.Equal("John Smith", r3.CustomerName);
-        Assert.Equal("1234567890", r3.CustomerId);
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("Did you receive my payment?", session));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("My phone number is 555-1234", session));
+        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("The last 4 digits are 1234", session));
+
+        Assert.Equal(AuthenticationState.Authenticated, m3.State);
+        Assert.Equal("John Smith", m3.CustomerName);
+        Assert.Equal("1234567890", m3.CustomerId);
     }
 }

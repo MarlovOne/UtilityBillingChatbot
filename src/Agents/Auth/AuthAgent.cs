@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
 
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -13,7 +14,7 @@ namespace UtilityBillingChatbot.Agents.Auth;
 /// Agent that verifies customer identity through conversational authentication.
 /// Uses security questions (SSN, DOB) to authenticate before account access.
 /// </summary>
-public class AuthAgent
+public class AuthAgent : IStreamingAgent<AuthMetadata>
 {
     private readonly IChatClient _chatClient;
     private readonly MockCISDatabase _cisDatabase;
@@ -32,38 +33,72 @@ public class AuthAgent
         _providerLogger = providerLogger;
     }
 
-    /// <summary>
-    /// Runs the authentication conversation.
-    /// </summary>
-    /// <param name="input">User's message</param>
-    /// <param name="session">Optional session for multi-turn auth flow</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Auth response with current state</returns>
-    public async Task<AuthResponse> RunAsync(
-        string input,
-        AuthSession? session = null,
-        CancellationToken cancellationToken = default)
+    public StreamingResult<AuthMetadata> StreamAsync(string input, CancellationToken ct = default)
     {
-        _logger.LogDebug("Auth input: {Input}", input);
+        var metadataTcs = new TaskCompletionSource<AuthMetadata>();
 
-        // Create new session with provider if not provided
-        session ??= await CreateSessionAsync(cancellationToken);
+        return new StreamingResult<AuthMetadata>
+        {
+            TextStream = StreamNewSessionAsync(input, metadataTcs, ct),
+            Metadata = metadataTcs.Task
+        };
+    }
 
-        var response = await session.Agent.RunAsync(
-            message: input,
-            session: session.AgentSession,
-            cancellationToken: cancellationToken);
+    /// <summary>
+    /// Streams the auth flow with an existing session for multi-turn authentication.
+    /// </summary>
+    public StreamingResult<AuthMetadata> StreamAsync(
+        string input, AuthSession session, CancellationToken ct = default)
+    {
+        _logger.LogDebug("Auth input (streaming, existing session): {Input}", input);
+
+        var metadataTcs = new TaskCompletionSource<AuthMetadata>();
+
+        return new StreamingResult<AuthMetadata>
+        {
+            TextStream = StreamWithSessionAsync(input, session, metadataTcs, ct),
+            Metadata = metadataTcs.Task
+        };
+    }
+
+    private async IAsyncEnumerable<string> StreamNewSessionAsync(
+        string input,
+        TaskCompletionSource<AuthMetadata> metadataTcs,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        _logger.LogDebug("Auth input (streaming, new session): {Input}", input);
+        var session = await CreateSessionAsync(ct);
+
+        await foreach (var chunk in StreamWithSessionAsync(input, session, metadataTcs, ct))
+        {
+            yield return chunk;
+        }
+    }
+
+    private async IAsyncEnumerable<string> StreamWithSessionAsync(
+        string input,
+        AuthSession session,
+        TaskCompletionSource<AuthMetadata> metadataTcs,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var update in session.Agent.RunStreamingAsync(
+            input, session.AgentSession, cancellationToken: ct))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                yield return update.Text;
+            }
+        }
 
         _logger.LogInformation("Auth state: {State}, Customer: {Customer}",
             session.Provider.AuthState, session.Provider.CustomerName);
 
-        return new AuthResponse(
-            Text: response.Text ?? string.Empty,
-            Session: session,
-            AuthState: session.Provider.AuthState,
-            CustomerId: session.Provider.CustomerId,
-            CustomerName: session.Provider.CustomerName,
-            IsAuthenticated: session.Provider.IsAuthenticated);
+        var metadata = new AuthMetadata(
+            session.Provider.AuthState,
+            session.Provider.CustomerId,
+            session.Provider.CustomerName);
+
+        metadataTcs.TrySetResult(metadata);
     }
 
     /// <summary>
@@ -78,7 +113,6 @@ public class AuthAgent
             Name = "AuthAgent",
             AIContextProviderFactory = (ctx, ct) =>
             {
-                // Restore from serialized state if available
                 if (ctx.SerializedState.ValueKind == JsonValueKind.Object)
                 {
                     return new ValueTask<AIContextProvider>(
@@ -98,20 +132,9 @@ public class AuthAgent
 /// Holds the agent, session, and provider for an auth flow.
 /// </summary>
 public record AuthSession(
-    AIAgent Agent,
+    ChatClientAgent Agent,
     AgentSession AgentSession,
     AuthenticationContextProvider Provider);
-
-/// <summary>
-/// Response from the auth agent.
-/// </summary>
-public record AuthResponse(
-    string Text,
-    AuthSession Session,
-    AuthenticationState AuthState,
-    string? CustomerId,
-    string? CustomerName,
-    bool IsAuthenticated);
 
 /// <summary>
 /// Extension methods for registering the AuthAgent.

@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
 
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -16,7 +17,6 @@ public class ChatbotService : BackgroundService
     private readonly IConfiguration _configuration;
     private readonly ILogger<ChatbotService> _logger;
 
-    // Session ID for this console session
     private readonly string _sessionId = Guid.NewGuid().ToString();
 
     public ChatbotService(
@@ -42,7 +42,6 @@ public class ChatbotService : BackgroundService
         {
             Console.Write("> ");
 
-            // Use a task to allow cancellation during ReadLine
             var inputTask = Task.Run(() => Console.ReadLine()?.Trim(), stoppingToken);
 
             try
@@ -65,7 +64,6 @@ public class ChatbotService : BackgroundService
             }
             catch (OperationCanceledException)
             {
-                // Expected when cancellation is requested
                 break;
             }
         }
@@ -87,25 +85,12 @@ public class ChatbotService : BackgroundService
         {
             _logger.LogInformation("User input received: {Length} chars", input.Length);
 
-            var response = await _orchestrator.ProcessMessageAsync(_sessionId, input, cancellationToken);
-
             Console.WriteLine();
-            Console.WriteLine(response.Message);
-
-            // Display next best action suggestions if present
-            if (response.SuggestedActions is { Count: > 0 })
+            await foreach (var chunk in _orchestrator.ProcessMessageStreamingAsync(
+                _sessionId, input, cancellationToken))
             {
-                Console.WriteLine();
-                Console.WriteLine("You might also want to ask:");
-                foreach (var suggestion in response.SuggestedActions)
-                {
-                    Console.WriteLine($"  - \"{suggestion.SuggestedQuestion}\"");
-                }
+                Console.Write(chunk);
             }
-
-            // Show status info for debugging
-            Console.WriteLine();
-            Console.WriteLine($"  [Category: {response.Category}, Action: {response.RequiredAction}]");
             Console.WriteLine();
         }
         catch (OperationCanceledException)
@@ -115,7 +100,7 @@ public class ChatbotService : BackgroundService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing user input: {Error}", ex.Message);
-            Console.WriteLine($"Error: {ex.Message}");
+            Console.WriteLine($"\nError: {ex.Message}");
             Console.WriteLine();
         }
     }

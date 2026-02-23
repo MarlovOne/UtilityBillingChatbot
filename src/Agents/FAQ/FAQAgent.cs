@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using System.Text.Json.Serialization;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -11,11 +12,12 @@ namespace UtilityBillingChatbot.Agents.FAQ;
 
 /// <summary>
 /// Agent that answers utility billing FAQ questions using a knowledge base.
-/// Does not require authentication - handles general billing questions only.
+/// Streams the answer text; reports metadata via ReportAnswerNotFound tool.
 /// </summary>
-public class FAQAgent
+public class FAQAgent : IStreamingAgent<FAQMetadata>
 {
-    private readonly ChatClientAgent _agent;
+    private readonly IChatClient _chatClient;
+    private readonly string _knowledgeBase;
     private readonly ILogger<FAQAgent> _logger;
 
     public FAQAgent(
@@ -23,51 +25,109 @@ public class FAQAgent
         string knowledgeBase,
         ILogger<FAQAgent> logger)
     {
+        _chatClient = chatClient;
+        _knowledgeBase = knowledgeBase;
         _logger = logger;
+    }
 
-        var instructions = BuildInstructions(knowledgeBase);
-        _agent = chatClient.AsAIAgent(new ChatClientAgentOptions
+    public StreamingResult<FAQMetadata> StreamAsync(string input, CancellationToken ct = default)
+    {
+        _logger.LogDebug("FAQ question (streaming): {Input}", input);
+
+        var provider = new FAQContextProvider(_knowledgeBase);
+        var metadataTcs = new TaskCompletionSource<FAQMetadata>();
+
+        return new StreamingResult<FAQMetadata>
         {
-            Name = "FAQAgent",
-            ChatOptions = new ChatOptions
-            {
-                Instructions = instructions,
-                ResponseFormat = ChatResponseFormat.ForJsonSchema<FAQStructuredOutput>()
-            }
-        });
+            TextStream = StreamCoreAsync(input, provider, metadataTcs, ct),
+            Metadata = metadataTcs.Task
+        };
     }
 
     /// <summary>
-    /// Answers a user's FAQ question based on the knowledge base.
+    /// Streams the FAQ answer with an existing session for multi-turn conversations.
     /// </summary>
-    /// <param name="input">The user's question</param>
-    /// <param name="session">Optional session for multi-turn conversations</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>The agent's response</returns>
-    public async Task<FAQResponse> AnswerAsync(
-        string input,
-        AgentSession? session = null,
-        CancellationToken cancellationToken = default)
+    public StreamingResult<FAQMetadata> StreamAsync(
+        string input, AgentSession session, ChatClientAgent agent,
+        FAQContextProvider provider, CancellationToken ct = default)
     {
-        _logger.LogDebug("FAQ question: {Input}", input);
+        _logger.LogDebug("FAQ question (streaming, existing session): {Input}", input);
 
-        session ??= await _agent.CreateSessionAsync(cancellationToken);
+        var metadataTcs = new TaskCompletionSource<FAQMetadata>();
 
-        var response = await _agent.RunAsync<FAQStructuredOutput>(message: input, session: session);
-
-        var output = response.Result;
-        _logger.LogInformation("FAQ response (FoundAnswer={FoundAnswer}): {Response}",
-            output?.FoundAnswer ?? false, output?.Response);
-
-        return new FAQResponse(
-            Text: output?.Response ?? response.Text ?? string.Empty,
-            FoundAnswer: output?.FoundAnswer ?? false,
-            Session: session);
+        return new StreamingResult<FAQMetadata>
+        {
+            TextStream = StreamWithSessionAsync(input, agent, session, provider, metadataTcs, ct),
+            Metadata = metadataTcs.Task
+        };
     }
 
-    private static string BuildInstructions(string knowledgeBase)
+    private async IAsyncEnumerable<string> StreamCoreAsync(
+        string input,
+        FAQContextProvider provider,
+        TaskCompletionSource<FAQMetadata> metadataTcs,
+        [EnumeratorCancellation] CancellationToken ct)
     {
-        return $"""
+        var agent = CreateAgent(provider);
+        var session = await agent.CreateSessionAsync(ct);
+
+        await foreach (var chunk in StreamWithSessionAsync(input, agent, session, provider, metadataTcs, ct))
+        {
+            yield return chunk;
+        }
+    }
+
+    private async IAsyncEnumerable<string> StreamWithSessionAsync(
+        string input,
+        ChatClientAgent agent,
+        AgentSession session,
+        FAQContextProvider provider,
+        TaskCompletionSource<FAQMetadata> metadataTcs,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var update in agent.RunStreamingAsync(input, session, cancellationToken: ct))
+        {
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                yield return update.Text;
+            }
+        }
+
+        var metadata = new FAQMetadata(provider.FoundAnswer);
+        _logger.LogInformation("FAQ response (FoundAnswer={FoundAnswer})", metadata.FoundAnswer);
+
+        metadataTcs.TrySetResult(metadata);
+    }
+
+    internal ChatClientAgent CreateAgent(FAQContextProvider provider)
+    {
+        return _chatClient.AsAIAgent(new ChatClientAgentOptions
+        {
+            Name = "FAQAgent",
+            AIContextProviderFactory = (ctx, cancellation) =>
+                new ValueTask<AIContextProvider>(provider)
+        });
+    }
+}
+
+/// <summary>
+/// Context provider for FAQ agent. Holds the knowledge base and the ReportAnswerNotFound tool.
+/// </summary>
+public sealed class FAQContextProvider : AIContextProvider
+{
+    private readonly string _knowledgeBase;
+
+    /// <summary>Defaults to true; set to false by ReportAnswerNotFound tool.</summary>
+    public bool FoundAnswer { get; private set; } = true;
+
+    public FAQContextProvider(string knowledgeBase)
+    {
+        _knowledgeBase = knowledgeBase;
+    }
+
+    public override ValueTask<AIContext> InvokingAsync(InvokingContext context, CancellationToken ct)
+    {
+        var instructions = $"""
             You are a utility billing customer support assistant. Answer questions
             based ONLY on the following knowledge base.
 
@@ -75,42 +135,39 @@ public class FAQAgent
             you can and mention what's not covered.
 
             KNOWLEDGE BASE:
-            {knowledgeBase}
+            {_knowledgeBase}
 
             IMPORTANT RULES:
             1. Never make up information not in the knowledge base
             2. If asked about their specific account (balance, usage, payments),
-               explain you'll need to verify their identity first to access that
+               call the ReportAnswerNotFound tool and explain you'll need to verify
+               their identity first to access that
             3. Keep responses under 200 words unless more detail is requested
             4. For questions about payment arrangements or extensions, explain the
                general policy but note that specific eligibility requires account access
-            5. Set foundAnswer to true if you can answer from the knowledge base,
-               false if the question is outside your knowledge base
+            5. If the question is outside your knowledge base, call the
+               ReportAnswerNotFound tool before responding
             """;
+
+        return new ValueTask<AIContext>(new AIContext
+        {
+            Instructions = instructions,
+            Tools =
+            [
+                AIFunctionFactory.Create(ReportAnswerNotFound,
+                    description: "Call this when the question is outside the knowledge base " +
+                                 "or requires account-specific data you cannot access.")
+            ]
+        });
+    }
+
+    [Description("Report that the question cannot be answered from the knowledge base")]
+    private string ReportAnswerNotFound()
+    {
+        FoundAnswer = false;
+        return "Noted: this question is outside the FAQ knowledge base.";
     }
 }
-
-/// <summary>
-/// Structured output from the FAQ agent for JSON schema validation.
-/// </summary>
-public class FAQStructuredOutput
-{
-    /// <summary>Whether the answer was found in the knowledge base.</summary>
-    [JsonPropertyName("foundAnswer")]
-    public bool FoundAnswer { get; set; }
-
-    /// <summary>The response text to show the user.</summary>
-    [JsonPropertyName("response")]
-    public string Response { get; set; } = string.Empty;
-}
-
-/// <summary>
-/// Response from the FAQ agent.
-/// </summary>
-/// <param name="Text">The response text</param>
-/// <param name="FoundAnswer">Whether the agent found an answer in the knowledge base</param>
-/// <param name="Session">The conversation session for follow-up questions</param>
-public record FAQResponse(string Text, bool FoundAnswer, AgentSession Session);
 
 /// <summary>
 /// Extension methods for registering the FAQAgent.
@@ -119,7 +176,6 @@ public static class FAQAgentExtensions
 {
     /// <summary>
     /// Adds the FAQAgent to the service collection.
-    /// Requires configuration of "FAQKnowledgeBasePath" in configuration.
     /// </summary>
     public static IServiceCollection AddFAQAgent(this IServiceCollection services)
     {

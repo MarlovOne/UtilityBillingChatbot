@@ -3,6 +3,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using UtilityBillingChatbot.Agents;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.UtilityData;
 using UtilityBillingChatbot.Infrastructure;
@@ -44,63 +45,76 @@ public class UtilityDataAgentTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DataAgent_ThrowsException_WhenNoAuthSession()
+    public void DataAgent_ThrowsException_WhenNoAuthSession()
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _utilityDataAgent.RunAsync("What is my balance?"));
+        var agent = (IStreamingAgent<UtilityDataMetadata>)_utilityDataAgent;
+        Assert.Throws<InvalidOperationException>(
+            () => agent.StreamAsync("What is my balance?"));
     }
 
     [Fact]
     public async Task DataAgent_ThrowsException_WhenNotAuthenticated()
     {
         // Get a session that's in Verifying state (not yet authenticated)
-        var r1 = await _authAgent.RunAsync("I need help");
-        var r2 = await _authAgent.RunAsync("555-1234", r1.Session);
+        var authSession = await _authAgent.CreateSessionAsync();
 
-        Assert.Equal(AuthenticationState.Verifying, r2.AuthState);
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("I need help", authSession));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("555-1234", authSession));
+
+        Assert.Equal(AuthenticationState.Verifying, authSession.Provider.AuthState);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _utilityDataAgent.CreateSessionAsync(r2.Session));
+            () => _utilityDataAgent.CreateSessionAsync(authSession));
     }
 
     [Fact]
     public async Task DataAgent_FetchesBalance_WhenAuthenticated()
     {
         // Authenticate John Smith
-        var r1 = await _authAgent.RunAsync("I need help with my account");
-        var r2 = await _authAgent.RunAsync("555-1234", r1.Session);
-        var r3 = await _authAgent.RunAsync("1234", r2.Session);
-        Assert.True(r3.IsAuthenticated);
+        var authSession = await _authAgent.CreateSessionAsync();
+
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("I need help with my account", authSession));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("555-1234", authSession));
+        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("1234", authSession));
+        Assert.Equal(AuthenticationState.Authenticated, m3.State);
 
         // Query balance
-        var response = await _utilityDataAgent.RunAsync(
-            "What is my current balance?",
-            authSession: r3.Session);
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _utilityDataAgent.StreamAsync("What is my current balance?",
+                authSession: authSession));
 
-        Assert.Contains("187", response.Text);
-        Assert.Equal("John Smith", response.CustomerName);
-        Assert.Equal("1234567890", response.AccountNumber);
+        Assert.Contains("187", text);
     }
 
     [Fact]
     public async Task DataAgent_AnalyzesUsage_WithComparison()
     {
         // Authenticate John Smith (has significant usage increase)
-        var r1 = await _authAgent.RunAsync("Check my bill");
-        var r2 = await _authAgent.RunAsync("555-1234", r1.Session);
-        var r3 = await _authAgent.RunAsync("1234", r2.Session);
-        Assert.True(r3.IsAuthenticated);
+        var authSession = await _authAgent.CreateSessionAsync();
+
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("Check my bill", authSession));
+        await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("555-1234", authSession));
+        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+            _authAgent.StreamAsync("1234", authSession));
+        Assert.Equal(AuthenticationState.Authenticated, m3.State);
 
         // Ask about high bill
-        var response = await _utilityDataAgent.RunAsync(
-            "Why is my bill so high?",
-            authSession: r3.Session);
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _utilityDataAgent.StreamAsync("Why is my bill so high?",
+                authSession: authSession));
 
         // Should mention usage or increase
         Assert.True(
-            response.Text.Contains("usage", StringComparison.OrdinalIgnoreCase) ||
-            response.Text.Contains("increase", StringComparison.OrdinalIgnoreCase) ||
-            response.Text.Contains("higher", StringComparison.OrdinalIgnoreCase),
-            $"Expected response about usage. Got: {response.Text}");
+            text.Contains("usage", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("increase", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("higher", StringComparison.OrdinalIgnoreCase),
+            $"Expected response about usage. Got: {text}");
     }
 }

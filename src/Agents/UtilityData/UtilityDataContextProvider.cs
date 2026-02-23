@@ -34,6 +34,11 @@ public sealed class UtilityDataContextProvider : AIContextProvider
     public string AccountNumber => _customer.AccountNumber;
 
     /// <summary>
+    /// Whether the agent found an answer. Defaults to true; set false by ReportAnswerNotFound tool.
+    /// </summary>
+    public bool FoundAnswer { get; private set; } = true;
+
+    /// <summary>
     /// Called before each agent invocation. Provides instructions and tools.
     /// </summary>
     public override ValueTask<AIContext> InvokingAsync(InvokingContext context, CancellationToken ct)
@@ -64,9 +69,9 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             - When discussing dates, be specific (e.g., "February 15, 2024")
             - Keep responses concise but complete
             - For payments, use the MakePayment tool with the customer's current balance
-            - Set foundAnswer to true if you can answer using your available tools
-            - Set foundAnswer to false if the question is outside your capabilities
-              (e.g., service changes, complaints, technical issues, rate changes)
+            - If the question is outside your capabilities (e.g., service changes,
+              complaints, technical issues, rate changes), call the ReportAnswerNotFound
+              tool before responding
             """;
     }
 
@@ -94,8 +99,11 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             AIFunctionFactory.Create(GetBillingHistory,
                 description: "Get a list of recent bills"),
 #pragma warning disable MEAI001 // ApprovalRequiredAIFunction is experimental
-            new ApprovalRequiredAIFunction(paymentTool)
+            new ApprovalRequiredAIFunction(paymentTool),
 #pragma warning restore MEAI001
+            AIFunctionFactory.Create(ReportAnswerNotFound,
+                description: "Call this when the question is outside your capabilities " +
+                             "(e.g., service changes, complaints, technical issues, rate changes)")
         ];
     }
 
@@ -312,6 +320,13 @@ public sealed class UtilityDataContextProvider : AIContextProvider
             BillingPeriod: billingPeriod,
             ConfirmationNumber: Guid.NewGuid().ToString()[..8].ToUpperInvariant(),
             Message: $"Payment of ${amount:F2} for {billingPeriod} has been submitted successfully.");
+    }
+
+    [Description("Report that the question cannot be answered with available tools")]
+    private string ReportAnswerNotFound()
+    {
+        FoundAnswer = false;
+        return "Noted: this question is outside the utility data agent's capabilities.";
     }
 
     #endregion

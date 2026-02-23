@@ -1,92 +1,107 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using Microsoft.Agents.AI;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using UtilityBillingChatbot.Infrastructure;
 using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.Classifier;
 
 /// <summary>
 /// Agent that classifies utility billing customer questions into routing categories.
-/// Categories: BillingFAQ, AccountData, ServiceRequest, OutOfScope, HumanRequested.
+/// For utility questions, calls ReportClassification tool (no streamed text).
+/// For greetings/chitchat, streams a conversational response (no tool call).
 /// </summary>
-public class ClassifierAgent
+public class ClassifierAgent(
+    IChatClient chatClient,
+    IReadOnlyList<VerifiedQuestion> verifiedQuestions,
+    ILogger<ClassifierAgent> logger) : IStreamingAgent<ClassificationMetadata>
 {
-    private readonly ChatClientAgent _agent;
-    private readonly IReadOnlyList<VerifiedQuestion> _verifiedQuestions;
-    private readonly ILogger<ClassifierAgent> _logger;
-
-    public ClassifierAgent(
-        IChatClient chatClient,
-        IReadOnlyList<VerifiedQuestion> verifiedQuestions,
-        ILogger<ClassifierAgent> logger)
+    public StreamingResult<ClassificationMetadata> StreamAsync(string input, CancellationToken ct = default)
     {
-        _verifiedQuestions = verifiedQuestions;
-        _logger = logger;
+        logger.LogDebug("Classifying input (streaming): {Length} chars", input.Length);
 
-        var instructions = ClassifierPrompts.BuildInstructions(verifiedQuestions);
-        _agent = chatClient.AsAIAgent(new ChatClientAgentOptions
+        var metadataTcs = new TaskCompletionSource<ClassificationMetadata>();
+
+        return new StreamingResult<ClassificationMetadata>
         {
-            Name = "ClassifierAgent",
-            ChatOptions = new ChatOptions
-            {
-                Instructions = instructions,
-                ResponseFormat = ChatResponseFormat.ForJsonSchema<QuestionClassification>()
-            }
-        });
+            TextStream = StreamCoreAsync(input, metadataTcs, ct),
+            Metadata = metadataTcs.Task
+        };
     }
 
-    /// <summary>
-    /// Classifies the user's input into a question category.
-    /// </summary>
-    /// <param name="input">The user's question</param>
-    /// <param name="cancellationToken">Cancellation token (not used by underlying agent but kept for API consistency)</param>
-    /// <returns>The classification result, or null if classification failed</returns>
-    public async Task<ClassificationResult> ClassifyAsync(string input, CancellationToken cancellationToken = default)
+    private async IAsyncEnumerable<string> StreamCoreAsync(
+        string input,
+        TaskCompletionSource<ClassificationMetadata> metadataTcs,
+        [EnumeratorCancellation] CancellationToken ct)
     {
-        _logger.LogDebug("Classifying input: {Length} chars", input.Length);
+        var toolResult = new ClassificationToolResult();
 
-        // Note: RunAsync<T> doesn't support cancellation tokens directly
-        var response = await _agent.RunAsync<QuestionClassification>(input);
+        var agent = chatClient.AsAIAgent(
+            name: "ClassifierAgent",
+            instructions: ClassifierPrompts.BuildStreamingInstructions(verifiedQuestions),
+            tools:
+            [
+                AIFunctionFactory.Create(toolResult.ReportClassification,
+                    description: "Report the classification of a utility billing question. " +
+                                 "Call this for any utility billing question (BillingFAQ, AccountData, ServiceRequest, OutOfScope, HumanRequested). " +
+                                 "Do NOT call this for greetings, chitchat, or pleasantries.")
+            ]);
 
-        if (!AgentResponseParser.TryGetResult(response, out var classification, out var parseError))
+        var session = await agent.CreateSessionAsync(ct);
+
+        await foreach (var update in agent.RunStreamingAsync(input, session, cancellationToken: ct))
         {
-            _logger.LogWarning("Failed to parse classifier response: {Error}", parseError);
-            return new ClassificationResult(null, parseError);
+            if (!string.IsNullOrEmpty(update.Text))
+            {
+                yield return update.Text;
+            }
         }
 
-        _logger.LogInformation("Classification: {Category}, Confidence: {Confidence:F2}",
-            classification.Category, classification.Confidence);
+        logger.LogInformation("Classification: Category={Category}, Confidence={Confidence:F2}",
+            toolResult.Metadata.Category, toolResult.Metadata.Confidence);
 
-        return new ClassificationResult(classification, null);
+        metadataTcs.TrySetResult(toolResult.Metadata);
+    }
+
+    private class ClassificationToolResult
+    {
+        public ClassificationMetadata Metadata { get; private set; } = new(null, 0);
+
+        [Description("Report the classification of a utility billing question")]
+        public string ReportClassification(
+            [Description("Category: BillingFAQ, AccountData, ServiceRequest, OutOfScope, or HumanRequested")]
+            string category,
+            [Description("Confidence score between 0.0 and 1.0")]
+            double confidence,
+            [Description("Specific question type ID if it matches a known type, or empty string")]
+            string questionType,
+            [Description("Brief explanation of the classification")]
+            string reasoning)
+        {
+            var parsed = Enum.TryParse<QuestionCategory>(category, true, out var c)
+                ? c
+                : QuestionCategory.OutOfScope;
+            Metadata = new ClassificationMetadata(parsed, confidence);
+            return $"Classification recorded: {category} (confidence: {confidence:F2})";
+        }
     }
 
     /// <summary>
     /// Finds the verified question that matches the classification, if any.
     /// </summary>
-    public VerifiedQuestion? FindMatchingQuestion(QuestionClassification classification)
+    public VerifiedQuestion? FindMatchingQuestion(QuestionCategory category, string? questionType)
     {
-        if (string.IsNullOrEmpty(classification.QuestionType))
+        if (string.IsNullOrEmpty(questionType))
         {
             return null;
         }
 
-        return _verifiedQuestions.FirstOrDefault(q =>
-            q.Id.Equals(classification.QuestionType, StringComparison.OrdinalIgnoreCase));
+        return verifiedQuestions.FirstOrDefault(q =>
+            q.Id.Equals(questionType, StringComparison.OrdinalIgnoreCase));
     }
-}
-
-/// <summary>
-/// Result of a classification operation.
-/// </summary>
-/// <param name="Classification">The classification result, or null if failed</param>
-/// <param name="Error">Error message if classification failed</param>
-public record ClassificationResult(QuestionClassification? Classification, string? Error)
-{
-    public bool IsSuccess => Classification is not null;
 }
 
 /// <summary>

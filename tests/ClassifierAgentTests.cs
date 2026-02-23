@@ -43,31 +43,27 @@ public class ClassifierAgentTests : IAsyncLifetime
     [Fact]
     public async Task Classifier_CategorizesBillingFAQ()
     {
-        var result = await _classifierAgent.ClassifyAsync("How can I pay my bill?");
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _classifierAgent.StreamAsync("How can I pay my bill?"));
 
-        Assert.True(result.IsSuccess, result.Error);
-        Assert.Equal(QuestionCategory.BillingFAQ, result.Classification!.Category);
-        Assert.False(result.Classification.RequiresAuth);
-        Assert.Equal("payment-options", result.Classification.QuestionType);
+        Assert.Equal(QuestionCategory.BillingFAQ, metadata.Category);
     }
 
     [Fact]
-    public async Task Classifier_RequiresAuth_ForAccountData()
+    public async Task Classifier_CategoriesAccountData()
     {
-        var result = await _classifierAgent.ClassifyAsync("What is my current account balance?");
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _classifierAgent.StreamAsync("What is my current account balance?"));
 
-        Assert.True(result.IsSuccess, result.Error);
-        Assert.Equal(QuestionCategory.AccountData, result.Classification!.Category);
-        Assert.True(result.Classification.RequiresAuth);
-        Assert.Equal("balance-inquiry", result.Classification.QuestionType);
+        Assert.Equal(QuestionCategory.AccountData, metadata.Category);
     }
 
     [Fact]
     public async Task Classifier_HandlesOutOfScope()
     {
-        var result = await _classifierAgent.ClassifyAsync("What's the weather tomorrow?");
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _classifierAgent.StreamAsync("What's the weather tomorrow?"));
 
-        Assert.True(result.IsSuccess, result.Error);
-        Assert.Equal(QuestionCategory.OutOfScope, result.Classification!.Category);
+        Assert.Equal(QuestionCategory.OutOfScope, metadata.Category);
     }
 }

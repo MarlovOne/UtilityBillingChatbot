@@ -43,33 +43,29 @@ public class FAQAgentTests : IAsyncLifetime
     [Fact]
     public async Task FAQAgent_AnswersPaymentOptions()
     {
-        // Arrange - Q5: "How can I pay my bill?"
-        // Act
-        var response = await _faqAgent.AnswerAsync("How can I pay my bill?");
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _faqAgent.StreamAsync("How can I pay my bill?"));
 
-        // Assert - should mention multiple payment methods
-        Assert.Contains("online", response.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.True(metadata.FoundAnswer);
+        Assert.Contains("online", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task FAQAgent_AnswersAssistancePrograms()
     {
-        // Arrange - Q7: "What assistance programs can help me?"
-        // Act
-        var response = await _faqAgent.AnswerAsync("What assistance programs are available to help pay my bill?");
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _faqAgent.StreamAsync("What assistance programs are available to help pay my bill?"));
 
-        // Assert - should mention LIHEAP
-        Assert.Contains("LIHEAP", response.Text);
+        Assert.True(metadata.FoundAnswer);
+        Assert.Contains("LIHEAP", text);
     }
 
     [Fact]
     public async Task FAQAgent_RedirectsAccountSpecificQuestions()
     {
-        // Arrange - Account-specific question requiring auth
-        // Act
-        var response = await _faqAgent.AnswerAsync("What's my current balance?");
+        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+            _faqAgent.StreamAsync("What's my current balance?"));
 
-        // Assert - should redirect to account verification
-        Assert.Contains("verify", response.Text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("verify", text, StringComparison.OrdinalIgnoreCase);
     }
 }
