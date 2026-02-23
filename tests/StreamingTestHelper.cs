@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using System.Text;
-using UtilityBillingChatbot.Agents;
+using UtilityBillingChatbot.Orchestration;
 
 namespace UtilityBillingChatbot.Tests;
 
@@ -11,30 +11,18 @@ namespace UtilityBillingChatbot.Tests;
 internal static class StreamingTestHelper
 {
     /// <summary>
-    /// Consumes a streaming result, collecting all text and returning it with the metadata.
+    /// Consumes a ChatEvent stream, collecting all text and returning it with all events.
     /// </summary>
-    public static async Task<(string Text, TMetadata Metadata)> ConsumeAsync<TMetadata>(
-        StreamingResult<TMetadata> result)
+    public static async Task<(string Text, List<ChatEvent> Events)> CollectAsync(
+        IAsyncEnumerable<ChatEvent> stream)
     {
         var sb = new StringBuilder();
-        await foreach (var chunk in result.TextStream)
+        var events = new List<ChatEvent>();
+        await foreach (var evt in stream)
         {
-            sb.Append(chunk);
+            events.Add(evt);
+            if (evt is TextChunk t) sb.Append(t.Text);
         }
-        var metadata = await result.Metadata;
-        return (sb.ToString(), metadata);
-    }
-
-    /// <summary>
-    /// Consumes an IAsyncEnumerable of string chunks into a single string.
-    /// </summary>
-    public static async Task<string> CollectAsync(IAsyncEnumerable<string> stream)
-    {
-        var sb = new StringBuilder();
-        await foreach (var chunk in stream)
-        {
-            sb.Append(chunk);
-        }
-        return sb.ToString();
+        return (sb.ToString(), events);
     }
 }

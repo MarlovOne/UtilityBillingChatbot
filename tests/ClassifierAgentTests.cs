@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Infrastructure;
+using UtilityBillingChatbot.Orchestration;
 
 namespace UtilityBillingChatbot.Tests;
 
@@ -43,27 +44,30 @@ public class ClassifierAgentTests : IAsyncLifetime
     [Fact]
     public async Task Classifier_CategorizesBillingFAQ()
     {
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _classifierAgent.StreamAsync("How can I pay my bill?"));
 
-        Assert.Equal(QuestionCategory.BillingFAQ, metadata.Category);
+        var classification = events.OfType<ClassificationEvent>().Single();
+        Assert.Equal(QuestionCategory.BillingFAQ, classification.Category);
     }
 
     [Fact]
     public async Task Classifier_CategoriesAccountData()
     {
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _classifierAgent.StreamAsync("What is my current account balance?"));
 
-        Assert.Equal(QuestionCategory.AccountData, metadata.Category);
+        var classification = events.OfType<ClassificationEvent>().Single();
+        Assert.Equal(QuestionCategory.AccountData, classification.Category);
     }
 
     [Fact]
     public async Task Classifier_HandlesOutOfScope()
     {
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _classifierAgent.StreamAsync("What's the weather tomorrow?"));
 
-        Assert.Equal(QuestionCategory.OutOfScope, metadata.Category);
+        var classification = events.OfType<ClassificationEvent>().Single();
+        Assert.Equal(QuestionCategory.OutOfScope, classification.Category);
     }
 }

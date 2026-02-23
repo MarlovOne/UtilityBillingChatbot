@@ -3,10 +3,10 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using UtilityBillingChatbot.Agents;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.UtilityData;
 using UtilityBillingChatbot.Infrastructure;
+using UtilityBillingChatbot.Orchestration;
 
 namespace UtilityBillingChatbot.Tests;
 
@@ -45,11 +45,14 @@ public class UtilityDataAgentTests : IAsyncLifetime
     }
 
     [Fact]
-    public void DataAgent_ThrowsException_WhenNoAuthSession()
+    public async Task DataAgent_ThrowsException_WhenNoAuthSession()
     {
-        var agent = (IStreamingAgent<UtilityDataMetadata>)_utilityDataAgent;
-        Assert.Throws<InvalidOperationException>(
-            () => agent.StreamAsync("What is my balance?"));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await foreach (var _ in _utilityDataAgent.StreamAsync("What is my balance?"))
+            {
+            }
+        });
     }
 
     [Fact]
@@ -58,9 +61,9 @@ public class UtilityDataAgentTests : IAsyncLifetime
         // Get a session that's in Verifying state (not yet authenticated)
         var authSession = await _authAgent.CreateSessionAsync();
 
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("I need help", authSession));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("555-1234", authSession));
 
         Assert.Equal(AuthenticationState.Verifying, authSession.Provider.AuthState);
@@ -75,16 +78,17 @@ public class UtilityDataAgentTests : IAsyncLifetime
         // Authenticate John Smith
         var authSession = await _authAgent.CreateSessionAsync();
 
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("I need help with my account", authSession));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("555-1234", authSession));
-        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+        var (_, events3) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("1234", authSession));
+        var m3 = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, m3.State);
 
         // Query balance
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _utilityDataAgent.StreamAsync("What is my current balance?",
                 authSession: authSession));
 
@@ -97,16 +101,17 @@ public class UtilityDataAgentTests : IAsyncLifetime
         // Authenticate John Smith (has significant usage increase)
         var authSession = await _authAgent.CreateSessionAsync();
 
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("Check my bill", authSession));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("555-1234", authSession));
-        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+        var (_, events3) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("1234", authSession));
+        var m3 = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, m3.State);
 
         // Ask about high bill
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _utilityDataAgent.StreamAsync("Why is my bill so high?",
                 authSession: authSession));
 

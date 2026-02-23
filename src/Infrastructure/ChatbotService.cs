@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -86,10 +85,25 @@ public class ChatbotService : BackgroundService
             _logger.LogInformation("User input received: {Length} chars", input.Length);
 
             Console.WriteLine();
-            await foreach (var chunk in _orchestrator.ProcessMessageStreamingAsync(
+            await foreach (var evt in _orchestrator.ProcessMessageStreamingAsync(
                 _sessionId, input, cancellationToken))
             {
-                Console.Write(chunk);
+                switch (evt)
+                {
+                    case TextChunk t:
+                        Console.Write(t.Text);
+                        break;
+                    case SuggestionsEvent s:
+                        Console.WriteLine();
+                        Console.WriteLine();
+                        Console.WriteLine("You might also want to ask:");
+                        foreach (var suggestion in s.Suggestions)
+                            Console.WriteLine($"  - \"{suggestion.SuggestedQuestion}\"");
+                        break;
+                    case DebugEvent d:
+                        Console.WriteLine($"\n\n  [Category: {d.Category}, Action: {d.Action}]");
+                        break;
+                }
             }
             Console.WriteLine();
         }

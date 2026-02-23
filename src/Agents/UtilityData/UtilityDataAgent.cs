@@ -16,7 +16,7 @@ namespace UtilityBillingChatbot.Agents.UtilityData;
 /// Requires a completed AuthSession from AuthAgent.
 /// Handles payment approval internally during streaming.
 /// </summary>
-public class UtilityDataAgent : IStreamingAgent<UtilityDataMetadata>
+public class UtilityDataAgent
 {
     private readonly IChatClient _chatClient;
     private readonly MockCISDatabase _cisDatabase;
@@ -38,37 +38,14 @@ public class UtilityDataAgent : IStreamingAgent<UtilityDataMetadata>
         _logger = logger;
     }
 
-    StreamingResult<UtilityDataMetadata> IStreamingAgent<UtilityDataMetadata>.StreamAsync(
-        string input, CancellationToken ct)
-    {
-        throw new InvalidOperationException(
-            "UtilityDataAgent requires an authenticated session. Use the overload with AuthSession or UtilityDataSession.");
-    }
-
     /// <summary>
     /// Streams a utility data query for an authenticated customer.
     /// </summary>
-    public StreamingResult<UtilityDataMetadata> StreamAsync(
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
         string input,
         UtilityDataSession? session = null,
         AuthSession? authSession = null,
-        CancellationToken ct = default)
-    {
-        var metadataTcs = new TaskCompletionSource<UtilityDataMetadata>();
-
-        return new StreamingResult<UtilityDataMetadata>
-        {
-            TextStream = StreamCoreAsync(input, session, authSession, metadataTcs, ct),
-            Metadata = metadataTcs.Task
-        };
-    }
-
-    private async IAsyncEnumerable<string> StreamCoreAsync(
-        string input,
-        UtilityDataSession? session,
-        AuthSession? authSession,
-        TaskCompletionSource<UtilityDataMetadata> metadataTcs,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
         if (session is null)
         {
@@ -84,20 +61,19 @@ public class UtilityDataAgent : IStreamingAgent<UtilityDataMetadata>
             session.Provider.CustomerName, input);
 
         // Stream with approval handling
-        await foreach (var chunk in StreamWithApprovalAsync(input, session, ct))
+        await foreach (var evt in StreamWithApprovalAsync(input, session, ct))
         {
-            yield return chunk;
+            yield return evt;
         }
 
-        var metadata = new UtilityDataMetadata(session.Provider.FoundAnswer);
         _logger.LogInformation("UtilityData response (FoundAnswer={FoundAnswer}) for {Customer} ({Account})",
-            metadata.FoundAnswer, session.Provider.CustomerName, session.Provider.AccountNumber);
+            session.Provider.FoundAnswer, session.Provider.CustomerName, session.Provider.AccountNumber);
 
-        metadataTcs.TrySetResult(metadata);
+        yield return new AnswerConfidenceEvent(session.Provider.FoundAnswer);
     }
 
 #pragma warning disable MEAI001 // FunctionApprovalRequestContent is experimental
-    private async IAsyncEnumerable<string> StreamWithApprovalAsync(
+    private async IAsyncEnumerable<ChatEvent> StreamWithApprovalAsync(
         string input,
         UtilityDataSession session,
         [EnumeratorCancellation] CancellationToken ct)
@@ -110,7 +86,7 @@ public class UtilityDataAgent : IStreamingAgent<UtilityDataMetadata>
             updates.Add(update);
             if (!string.IsNullOrEmpty(update.Text))
             {
-                yield return update.Text;
+                yield return new TextChunk(update.Text);
             }
         }
 
@@ -146,7 +122,7 @@ public class UtilityDataAgent : IStreamingAgent<UtilityDataMetadata>
                 updates.Add(update);
                 if (!string.IsNullOrEmpty(update.Text))
                 {
-                    yield return update.Text;
+                    yield return new TextChunk(update.Text);
                 }
             }
 

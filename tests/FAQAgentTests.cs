@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using UtilityBillingChatbot.Agents.FAQ;
 using UtilityBillingChatbot.Infrastructure;
+using UtilityBillingChatbot.Orchestration;
 
 namespace UtilityBillingChatbot.Tests;
 
@@ -43,27 +44,29 @@ public class FAQAgentTests : IAsyncLifetime
     [Fact]
     public async Task FAQAgent_AnswersPaymentOptions()
     {
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _faqAgent.StreamAsync("How can I pay my bill?"));
 
-        Assert.True(metadata.FoundAnswer);
+        var confidence = events.OfType<AnswerConfidenceEvent>().Single();
+        Assert.True(confidence.FoundAnswer);
         Assert.Contains("online", text, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
     public async Task FAQAgent_AnswersAssistancePrograms()
     {
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _faqAgent.StreamAsync("What assistance programs are available to help pay my bill?"));
 
-        Assert.True(metadata.FoundAnswer);
+        var confidence = events.OfType<AnswerConfidenceEvent>().Single();
+        Assert.True(confidence.FoundAnswer);
         Assert.Contains("LIHEAP", text);
     }
 
     [Fact]
     public async Task FAQAgent_RedirectsAccountSpecificQuestions()
     {
-        var (text, metadata) = await StreamingTestHelper.ConsumeAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _faqAgent.StreamAsync("What's my current balance?"));
 
         Assert.Contains("verify", text, StringComparison.OrdinalIgnoreCase);

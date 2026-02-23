@@ -4,7 +4,6 @@ using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
-using UtilityBillingChatbot.Agents;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 using UtilityBillingChatbot.Agents.FAQ;
@@ -53,9 +52,9 @@ public class ChatbotOrchestrator
     }
 
     /// <summary>
-    /// Processes a user message, streaming the response token by token.
+    /// Processes a user message, streaming the response as typed events.
     /// </summary>
-    public async IAsyncEnumerable<string> ProcessMessageStreamingAsync(
+    public async IAsyncEnumerable<ChatEvent> ProcessMessageStreamingAsync(
         string sessionId,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct = default)
@@ -77,10 +76,11 @@ public class ChatbotOrchestrator
             ? ContinueAuthFlowStreamingAsync(session, userMessage, ct)
             : RouteMessageStreamingAsync(session, userMessage, ct);
 
-        await foreach (var chunk in stream.WithCancellation(ct))
+        await foreach (var evt in stream.WithCancellation(ct))
         {
-            responseText.Append(chunk);
-            yield return chunk;
+            if (evt is TextChunk t)
+                responseText.Append(t.Text);
+            yield return evt;
         }
 
         // Add response to history
@@ -99,33 +99,33 @@ public class ChatbotOrchestrator
             var suggestions = await GetNextBestActionsAsync(session, category!.Value, ct);
             if (suggestions is { Count: > 0 })
             {
-                yield return FormatSuggestions(suggestions);
+                yield return new SuggestionsEvent(suggestions);
             }
         }
 
         // Yield debug info
-        yield return $"\n\n  [Category: {category}, Action: {requiredAction}]\n";
+        yield return new DebugEvent(category, requiredAction);
 
         await SaveSessionAsync(session, ct);
     }
 
-    private async IAsyncEnumerable<string> RouteMessageStreamingAsync(
+    private async IAsyncEnumerable<ChatEvent> RouteMessageStreamingAsync(
         ChatSession session,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
         // Stream the classifier
-        var classifierResult = _classifierAgent.StreamAsync(userMessage, ct);
+        QuestionCategory? classifiedCategory = null;
 
-        await foreach (var chunk in classifierResult.TextStream.WithCancellation(ct))
+        await foreach (var evt in _classifierAgent.StreamAsync(userMessage, ct))
         {
-            yield return chunk;
+            yield return evt;
+            if (evt is ClassificationEvent ce)
+                classifiedCategory = ce.Category;
         }
 
-        var classification = await classifierResult.Metadata;
-
         // Null category = greeting/chitchat — text already streamed, we're done
-        if (classification.Category is null)
+        if (classifiedCategory is null)
         {
             _logger.LogInformation("Greeting/chitchat detected, response already streamed");
             session.LastCategory = null;
@@ -133,9 +133,8 @@ public class ChatbotOrchestrator
             yield break;
         }
 
-        var category = classification.Category.Value;
-        _logger.LogInformation("Classified as {Category} with confidence {Confidence}",
-            category, classification.Confidence);
+        var category = classifiedCategory.Value;
+        _logger.LogInformation("Classified as {Category}", category);
 
         session.LastCategory = category;
 
@@ -151,42 +150,38 @@ public class ChatbotOrchestrator
             _ => HandleOutOfScopeAsync(session)
         };
 
-        await foreach (var chunk in handlerStream.WithCancellation(ct))
+        await foreach (var evt in handlerStream.WithCancellation(ct))
         {
-            yield return chunk;
+            yield return evt;
         }
     }
 
-    private async IAsyncEnumerable<string> HandleBillingFAQAsync(
+    private async IAsyncEnumerable<ChatEvent> HandleBillingFAQAsync(
         ChatSession session,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
         _logger.LogDebug("Routing to FAQ agent");
 
-        var faqResult = _faqAgent.StreamAsync(userMessage, ct);
-
-        await foreach (var chunk in faqResult.TextStream.WithCancellation(ct))
+        await foreach (var evt in _faqAgent.StreamAsync(userMessage, ct))
         {
-            yield return chunk;
+            yield return evt;
+            if (evt is AnswerConfidenceEvent { FoundAnswer: false })
+            {
+                _logger.LogInformation("FAQ agent cannot answer, escalating to human");
+                await InitiateHumanHandoffAsync(session, userMessage,
+                    "Question outside FAQ knowledge base", ct);
+                session.LastRequiredAction = RequiredAction.HumanHandoffNeeded;
+            }
         }
 
-        var metadata = await faqResult.Metadata;
-
-        if (!metadata.FoundAnswer)
-        {
-            _logger.LogInformation("FAQ agent cannot answer, escalating to human");
-            await InitiateHumanHandoffAsync(session, userMessage,
-                "Question outside FAQ knowledge base", ct);
-            session.LastRequiredAction = RequiredAction.HumanHandoffNeeded;
-        }
-        else
+        if (session.LastRequiredAction != RequiredAction.HumanHandoffNeeded)
         {
             session.LastRequiredAction = RequiredAction.None;
         }
     }
 
-    private async IAsyncEnumerable<string> HandleAccountDataAsync(
+    private async IAsyncEnumerable<ChatEvent> HandleAccountDataAsync(
         ChatSession session,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
@@ -194,8 +189,8 @@ public class ChatbotOrchestrator
         if (!session.UserContext.IsAuthenticated || session.AuthSession is null)
         {
             _logger.LogDebug("Authentication required, initiating auth flow");
-            await foreach (var chunk in InitiateAuthFlowAsync(session, userMessage, ct))
-                yield return chunk;
+            await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
+                yield return evt;
             yield break;
         }
 
@@ -205,35 +200,31 @@ public class ChatbotOrchestrator
         var utilitySession = await ResolveUtilitySessionAsync(session, ct);
         if (utilitySession is null)
         {
-            await foreach (var chunk in InitiateAuthFlowAsync(session, userMessage, ct))
-                yield return chunk;
+            await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
+                yield return evt;
             yield break;
         }
 
-        var result = _utilityDataAgent.StreamAsync(
-            userMessage, session: utilitySession, ct: ct);
-
-        await foreach (var chunk in result.TextStream.WithCancellation(ct))
+        await foreach (var evt in _utilityDataAgent.StreamAsync(
+            userMessage, session: utilitySession, ct: ct))
         {
-            yield return chunk;
+            yield return evt;
+            if (evt is AnswerConfidenceEvent { FoundAnswer: false })
+            {
+                _logger.LogInformation("UtilityData agent cannot answer, escalating to human");
+                await InitiateHumanHandoffAsync(session, userMessage,
+                    "Account question outside agent capabilities", ct);
+                session.LastRequiredAction = RequiredAction.HumanHandoffNeeded;
+            }
         }
 
-        var metadata = await result.Metadata;
-
-        if (!metadata.FoundAnswer)
-        {
-            _logger.LogInformation("UtilityData agent cannot answer, escalating to human");
-            await InitiateHumanHandoffAsync(session, userMessage,
-                "Account question outside agent capabilities", ct);
-            session.LastRequiredAction = RequiredAction.HumanHandoffNeeded;
-        }
-        else
+        if (session.LastRequiredAction != RequiredAction.HumanHandoffNeeded)
         {
             session.LastRequiredAction = RequiredAction.None;
         }
     }
 
-    private async IAsyncEnumerable<string> InitiateAuthFlowAsync(
+    private async IAsyncEnumerable<ChatEvent> InitiateAuthFlowAsync(
         ChatSession session,
         string pendingQuery,
         [EnumeratorCancellation] CancellationToken ct)
@@ -244,64 +235,65 @@ public class ChatbotOrchestrator
         var authSession = await _authAgent.CreateSessionAsync(ct);
         session.AuthSession = authSession;
 
-        var authResult = _authAgent.StreamAsync(
-            "I need to access my account.", authSession, ct);
+        yield return new TextChunk("To access your account information, I'll need to verify your identity first.\n\n");
 
-        yield return "To access your account information, I'll need to verify your identity first.\n\n";
-
-        await foreach (var chunk in authResult.TextStream.WithCancellation(ct))
+        await foreach (var evt in _authAgent.StreamAsync(
+            "I need to access my account.", authSession, ct))
         {
-            yield return chunk;
+            yield return evt;
         }
 
-        await authResult.Metadata;
         session.LastRequiredAction = RequiredAction.AuthenticationInProgress;
     }
 
-    private async IAsyncEnumerable<string> ContinueAuthFlowStreamingAsync(
+    private async IAsyncEnumerable<ChatEvent> ContinueAuthFlowStreamingAsync(
         ChatSession session,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
         _logger.LogDebug("Continuing authentication flow");
 
-        var authResult = _authAgent.StreamAsync(userMessage, session.AuthSession!, ct);
+        AuthStateEvent? authState = null;
 
-        await foreach (var chunk in authResult.TextStream.WithCancellation(ct))
+        await foreach (var evt in _authAgent.StreamAsync(userMessage, session.AuthSession!, ct))
         {
-            yield return chunk;
+            yield return evt;
+            if (evt is AuthStateEvent ase)
+                authState = ase;
         }
 
-        var metadata = await authResult.Metadata;
-        session.UserContext.AuthState = metadata.State;
+        if (authState is null)
+            yield break;
 
-        if (metadata.State == AuthenticationState.Authenticated)
+        session.UserContext.AuthState = authState.State;
+
+        if (authState.State == AuthenticationState.Authenticated)
         {
-            session.UserContext.CustomerId = metadata.CustomerId;
-            session.UserContext.CustomerName = metadata.CustomerName;
+            session.UserContext.CustomerId = authState.CustomerId;
+            session.UserContext.CustomerName = authState.CustomerName;
             session.UserContext.SessionExpiry = DateTimeOffset.UtcNow.Add(SessionExpiryDuration);
 
-            _logger.LogInformation("Authentication successful for {Customer}", metadata.CustomerName);
+            _logger.LogInformation("Authentication successful for {Customer}", authState.CustomerName);
 
             if (!string.IsNullOrEmpty(session.PendingQuery))
             {
                 var pendingQuery = session.PendingQuery;
                 session.PendingQuery = null;
 
-                yield return $"\n\nThank you, {metadata.CustomerName}! You're now verified.\n\n";
+                yield return new TextChunk($"\n\nThank you, {authState.CustomerName}! You're now verified.\n\n");
 
                 // Replay the pending query through account data handler
-                await foreach (var chunk in HandleAccountDataAsync(session, pendingQuery, ct))
-                    yield return chunk;
+                await foreach (var evt in HandleAccountDataAsync(session, pendingQuery, ct))
+                    yield return evt;
             }
             else
             {
-                yield return $"\n\nThank you, {metadata.CustomerName}! You're now verified. How can I help you with your account?";
+                yield return new TextChunk($"\n\nThank you, {authState.CustomerName}! You're now verified. How can I help you with your account?");
             }
 
             session.LastRequiredAction = RequiredAction.None;
         }
-        else if (metadata.State == AuthenticationState.LockedOut)
+        else if (authState.State == AuthenticationState.LockedOut)
         {
             _logger.LogWarning("Authentication locked out for session {SessionId}", session.SessionId);
             session.PendingQuery = null;
@@ -313,7 +305,7 @@ public class ChatbotOrchestrator
         }
     }
 
-    private async IAsyncEnumerable<string> HandleHandoffAsync(
+    private async IAsyncEnumerable<ChatEvent> HandleHandoffAsync(
         ChatSession session,
         string userMessage,
         string reason,
@@ -323,18 +315,18 @@ public class ChatbotOrchestrator
         await InitiateHumanHandoffAsync(session, userMessage, reason, ct);
         session.LastRequiredAction = RequiredAction.None;
 
-        yield return "I've forwarded your request to a customer service representative. " +
+        yield return new TextChunk("I've forwarded your request to a customer service representative. " +
                      "They'll reach out to you shortly to assist with your inquiry. " +
-                     "Is there anything else I can help you with in the meantime?";
+                     "Is there anything else I can help you with in the meantime?");
     }
 
 #pragma warning disable CS1998 // Async method lacks 'await' operators
-    private static async IAsyncEnumerable<string> HandleOutOfScopeAsync(ChatSession session)
+    private static async IAsyncEnumerable<ChatEvent> HandleOutOfScopeAsync(ChatSession session)
     {
         session.LastRequiredAction = RequiredAction.ClarificationNeeded;
-        yield return "I'm a utility billing assistant and can help you with billing questions, " +
+        yield return new TextChunk("I'm a utility billing assistant and can help you with billing questions, " +
                      "account information, and payment options. Could you please ask something " +
-                     "related to your utility bill or account?";
+                     "related to your utility bill or account?");
     }
 #pragma warning restore CS1998
 
@@ -437,19 +429,6 @@ public class ChatbotOrchestrator
             return false;
 
         return true;
-    }
-
-    private static string FormatSuggestions(List<SuggestedAction> suggestions)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine();
-        sb.AppendLine();
-        sb.AppendLine("You might also want to ask:");
-        foreach (var suggestion in suggestions)
-        {
-            sb.AppendLine($"  - \"{suggestion.SuggestedQuestion}\"");
-        }
-        return sb.ToString();
     }
 
     private async Task<List<SuggestedAction>?> GetNextBestActionsAsync(

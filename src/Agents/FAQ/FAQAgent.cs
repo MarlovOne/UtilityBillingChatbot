@@ -6,6 +6,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using UtilityBillingChatbot.Orchestration;
 using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.FAQ;
@@ -14,7 +15,7 @@ namespace UtilityBillingChatbot.Agents.FAQ;
 /// Agent that answers utility billing FAQ questions using a knowledge base.
 /// Streams the answer text; reports metadata via ReportAnswerNotFound tool.
 /// </summary>
-public class FAQAgent : IStreamingAgent<FAQMetadata>
+public class FAQAgent : IStreamingAgent
 {
     private readonly IChatClient _chatClient;
     private readonly string _knowledgeBase;
@@ -30,73 +31,54 @@ public class FAQAgent : IStreamingAgent<FAQMetadata>
         _logger = logger;
     }
 
-    public StreamingResult<FAQMetadata> StreamAsync(string input, CancellationToken ct = default)
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
+        string input, [EnumeratorCancellation] CancellationToken ct = default)
     {
         _logger.LogDebug("FAQ question (streaming): {Input}", input);
 
         var provider = new FAQContextProvider(_knowledgeBase);
-        var metadataTcs = new TaskCompletionSource<FAQMetadata>();
+        var agent = CreateAgent(provider);
+        var session = await agent.CreateSessionAsync(ct);
 
-        return new StreamingResult<FAQMetadata>
+        await foreach (var evt in StreamWithSessionAsync(input, agent, session, provider, ct))
         {
-            TextStream = StreamCoreAsync(input, provider, metadataTcs, ct),
-            Metadata = metadataTcs.Task
-        };
+            yield return evt;
+        }
     }
 
     /// <summary>
     /// Streams the FAQ answer with an existing session for multi-turn conversations.
     /// </summary>
-    public StreamingResult<FAQMetadata> StreamAsync(
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
         string input, AgentSession session, ChatClientAgent agent,
-        FAQContextProvider provider, CancellationToken ct = default)
+        FAQContextProvider provider, [EnumeratorCancellation] CancellationToken ct = default)
     {
         _logger.LogDebug("FAQ question (streaming, existing session): {Input}", input);
 
-        var metadataTcs = new TaskCompletionSource<FAQMetadata>();
-
-        return new StreamingResult<FAQMetadata>
+        await foreach (var evt in StreamWithSessionAsync(input, agent, session, provider, ct))
         {
-            TextStream = StreamWithSessionAsync(input, agent, session, provider, metadataTcs, ct),
-            Metadata = metadataTcs.Task
-        };
-    }
-
-    private async IAsyncEnumerable<string> StreamCoreAsync(
-        string input,
-        FAQContextProvider provider,
-        TaskCompletionSource<FAQMetadata> metadataTcs,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
-        var agent = CreateAgent(provider);
-        var session = await agent.CreateSessionAsync(ct);
-
-        await foreach (var chunk in StreamWithSessionAsync(input, agent, session, provider, metadataTcs, ct))
-        {
-            yield return chunk;
+            yield return evt;
         }
     }
 
-    private async IAsyncEnumerable<string> StreamWithSessionAsync(
+    private async IAsyncEnumerable<ChatEvent> StreamWithSessionAsync(
         string input,
         ChatClientAgent agent,
         AgentSession session,
         FAQContextProvider provider,
-        TaskCompletionSource<FAQMetadata> metadataTcs,
         [EnumeratorCancellation] CancellationToken ct)
     {
         await foreach (var update in agent.RunStreamingAsync(input, session, cancellationToken: ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
-                yield return update.Text;
+                yield return new TextChunk(update.Text);
             }
         }
 
-        var metadata = new FAQMetadata(provider.FoundAnswer);
-        _logger.LogInformation("FAQ response (FoundAnswer={FoundAnswer})", metadata.FoundAnswer);
+        _logger.LogInformation("FAQ response (FoundAnswer={FoundAnswer})", provider.FoundAnswer);
 
-        metadataTcs.TrySetResult(metadata);
+        yield return new AnswerConfidenceEvent(provider.FoundAnswer);
     }
 
     internal ChatClientAgent CreateAgent(FAQContextProvider provider)

@@ -6,6 +6,7 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using UtilityBillingChatbot.Orchestration;
 using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.Auth;
@@ -14,7 +15,7 @@ namespace UtilityBillingChatbot.Agents.Auth;
 /// Agent that verifies customer identity through conversational authentication.
 /// Uses security questions (SSN, DOB) to authenticate before account access.
 /// </summary>
-public class AuthAgent : IStreamingAgent<AuthMetadata>
+public class AuthAgent : IStreamingAgent
 {
     private readonly IChatClient _chatClient;
     private readonly MockCISDatabase _cisDatabase;
@@ -33,52 +34,35 @@ public class AuthAgent : IStreamingAgent<AuthMetadata>
         _providerLogger = providerLogger;
     }
 
-    public StreamingResult<AuthMetadata> StreamAsync(string input, CancellationToken ct = default)
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
+        string input, [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var metadataTcs = new TaskCompletionSource<AuthMetadata>();
+        _logger.LogDebug("Auth input (streaming, new session): {Input}", input);
+        var session = await CreateSessionAsync(ct);
 
-        return new StreamingResult<AuthMetadata>
+        await foreach (var evt in StreamWithSessionAsync(input, session, ct))
         {
-            TextStream = StreamNewSessionAsync(input, metadataTcs, ct),
-            Metadata = metadataTcs.Task
-        };
+            yield return evt;
+        }
     }
 
     /// <summary>
     /// Streams the auth flow with an existing session for multi-turn authentication.
     /// </summary>
-    public StreamingResult<AuthMetadata> StreamAsync(
-        string input, AuthSession session, CancellationToken ct = default)
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
+        string input, AuthSession session, [EnumeratorCancellation] CancellationToken ct = default)
     {
         _logger.LogDebug("Auth input (streaming, existing session): {Input}", input);
 
-        var metadataTcs = new TaskCompletionSource<AuthMetadata>();
-
-        return new StreamingResult<AuthMetadata>
+        await foreach (var evt in StreamWithSessionAsync(input, session, ct))
         {
-            TextStream = StreamWithSessionAsync(input, session, metadataTcs, ct),
-            Metadata = metadataTcs.Task
-        };
-    }
-
-    private async IAsyncEnumerable<string> StreamNewSessionAsync(
-        string input,
-        TaskCompletionSource<AuthMetadata> metadataTcs,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
-        _logger.LogDebug("Auth input (streaming, new session): {Input}", input);
-        var session = await CreateSessionAsync(ct);
-
-        await foreach (var chunk in StreamWithSessionAsync(input, session, metadataTcs, ct))
-        {
-            yield return chunk;
+            yield return evt;
         }
     }
 
-    private async IAsyncEnumerable<string> StreamWithSessionAsync(
+    private async IAsyncEnumerable<ChatEvent> StreamWithSessionAsync(
         string input,
         AuthSession session,
-        TaskCompletionSource<AuthMetadata> metadataTcs,
         [EnumeratorCancellation] CancellationToken ct)
     {
         await foreach (var update in session.Agent.RunStreamingAsync(
@@ -86,19 +70,17 @@ public class AuthAgent : IStreamingAgent<AuthMetadata>
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
-                yield return update.Text;
+                yield return new TextChunk(update.Text);
             }
         }
 
         _logger.LogInformation("Auth state: {State}, Customer: {Customer}",
             session.Provider.AuthState, session.Provider.CustomerName);
 
-        var metadata = new AuthMetadata(
+        yield return new AuthStateEvent(
             session.Provider.AuthState,
             session.Provider.CustomerId,
             session.Provider.CustomerName);
-
-        metadataTcs.TrySetResult(metadata);
     }
 
     /// <summary>

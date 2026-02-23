@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using UtilityBillingChatbot.Orchestration;
 using static UtilityBillingChatbot.Infrastructure.ServiceCollectionExtensions;
 
 namespace UtilityBillingChatbot.Agents.Classifier;
@@ -17,26 +18,13 @@ namespace UtilityBillingChatbot.Agents.Classifier;
 public class ClassifierAgent(
     IChatClient chatClient,
     IReadOnlyList<VerifiedQuestion> verifiedQuestions,
-    ILogger<ClassifierAgent> logger) : IStreamingAgent<ClassificationMetadata>
+    ILogger<ClassifierAgent> logger) : IStreamingAgent
 {
-    public StreamingResult<ClassificationMetadata> StreamAsync(string input, CancellationToken ct = default)
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
+        string input, [EnumeratorCancellation] CancellationToken ct = default)
     {
         logger.LogDebug("Classifying input (streaming): {Length} chars", input.Length);
 
-        var metadataTcs = new TaskCompletionSource<ClassificationMetadata>();
-
-        return new StreamingResult<ClassificationMetadata>
-        {
-            TextStream = StreamCoreAsync(input, metadataTcs, ct),
-            Metadata = metadataTcs.Task
-        };
-    }
-
-    private async IAsyncEnumerable<string> StreamCoreAsync(
-        string input,
-        TaskCompletionSource<ClassificationMetadata> metadataTcs,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
         var toolResult = new ClassificationToolResult();
 
         var agent = chatClient.AsAIAgent(
@@ -56,19 +44,20 @@ public class ClassifierAgent(
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
-                yield return update.Text;
+                yield return new TextChunk(update.Text);
             }
         }
 
         logger.LogInformation("Classification: Category={Category}, Confidence={Confidence:F2}",
-            toolResult.Metadata.Category, toolResult.Metadata.Confidence);
+            toolResult.Category, toolResult.Confidence);
 
-        metadataTcs.TrySetResult(toolResult.Metadata);
+        yield return new ClassificationEvent(toolResult.Category, toolResult.Confidence);
     }
 
     private class ClassificationToolResult
     {
-        public ClassificationMetadata Metadata { get; private set; } = new(null, 0);
+        public QuestionCategory? Category { get; private set; }
+        public double Confidence { get; private set; }
 
         [Description("Report the classification of a utility billing question")]
         public string ReportClassification(
@@ -84,7 +73,8 @@ public class ClassifierAgent(
             var parsed = Enum.TryParse<QuestionCategory>(category, true, out var c)
                 ? c
                 : QuestionCategory.OutOfScope;
-            Metadata = new ClassificationMetadata(parsed, confidence);
+            Category = parsed;
+            Confidence = confidence;
             return $"Classification recorded: {category} (confidence: {confidence:F2})";
         }
     }

@@ -3,9 +3,9 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using UtilityBillingChatbot.Agents;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Infrastructure;
+using UtilityBillingChatbot.Orchestration;
 
 namespace UtilityBillingChatbot.Tests;
 
@@ -46,11 +46,12 @@ public class AuthAgentTests : IAsyncLifetime
     {
         var session = await _authAgent.CreateSessionAsync();
 
-        var (text1, meta1) = await StreamingTestHelper.ConsumeAsync(
+        var (text1, events1) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("I want to check my bill", session));
-        var (text2, meta2) = await StreamingTestHelper.ConsumeAsync(
+        var (text2, events2) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("555-1234", session));
 
+        var meta2 = events2.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Verifying, meta2.State);
         Assert.Equal("John Smith", meta2.CustomerName);
         Assert.Equal("1234567890", meta2.CustomerId);
@@ -61,13 +62,14 @@ public class AuthAgentTests : IAsyncLifetime
     {
         var session = await _authAgent.CreateSessionAsync();
 
-        var (_, m1) = await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("I need help with my account", session));
-        var (_, m2) = await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("555-1234", session));
-        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+        var (_, events3) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("1234", session));
 
+        var m3 = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, m3.State);
         Assert.Equal("John Smith", m3.CustomerName);
     }
@@ -77,17 +79,18 @@ public class AuthAgentTests : IAsyncLifetime
     {
         var session = await _authAgent.CreateSessionAsync();
 
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("Check my bill", session));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("555-1234", session));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("0000", session));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("1111", session));
-        var (_, m5) = await StreamingTestHelper.ConsumeAsync(
+        var (_, events5) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("2222", session));
 
+        var m5 = events5.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.LockedOut, m5.State);
     }
 
@@ -96,11 +99,12 @@ public class AuthAgentTests : IAsyncLifetime
     {
         var session = await _authAgent.CreateSessionAsync();
 
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("Help with my account", session));
-        var (_, m2) = await StreamingTestHelper.ConsumeAsync(
+        var (_, events2) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("maria.garcia@example.com", session));
 
+        var m2 = events2.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Verifying, m2.State);
         Assert.Equal("Maria Garcia", m2.CustomerName);
     }
@@ -110,13 +114,14 @@ public class AuthAgentTests : IAsyncLifetime
     {
         var session = await _authAgent.CreateSessionAsync();
 
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("Did you receive my payment?", session));
-        await StreamingTestHelper.ConsumeAsync(
+        await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("My phone number is 555-1234", session));
-        var (_, m3) = await StreamingTestHelper.ConsumeAsync(
+        var (_, events3) = await StreamingTestHelper.CollectAsync(
             _authAgent.StreamAsync("The last 4 digits are 1234", session));
 
+        var m3 = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, m3.State);
         Assert.Equal("John Smith", m3.CustomerName);
         Assert.Equal("1234567890", m3.CustomerId);

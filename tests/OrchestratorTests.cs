@@ -45,14 +45,14 @@ public class OrchestratorTests : IAsyncLifetime
     {
         var sessionId = Guid.NewGuid().ToString();
 
-        var response = await StreamingTestHelper.CollectAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "What are my payment options?"));
 
         Assert.True(
-            response.Contains("pay", StringComparison.OrdinalIgnoreCase) ||
-            response.Contains("bill", StringComparison.OrdinalIgnoreCase) ||
-            response.Contains("online", StringComparison.OrdinalIgnoreCase),
-            $"Expected FAQ response about payment. Got: {response}");
+            text.Contains("pay", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("bill", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("online", StringComparison.OrdinalIgnoreCase),
+            $"Expected FAQ response about payment. Got: {text}");
     }
 
     [Fact]
@@ -60,14 +60,14 @@ public class OrchestratorTests : IAsyncLifetime
     {
         var sessionId = Guid.NewGuid().ToString();
 
-        var response = await StreamingTestHelper.CollectAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "What is my current balance?"));
 
         Assert.True(
-            response.Contains("verify", StringComparison.OrdinalIgnoreCase) ||
-            response.Contains("phone", StringComparison.OrdinalIgnoreCase) ||
-            response.Contains("identity", StringComparison.OrdinalIgnoreCase),
-            $"Expected auth prompt. Got: {response}");
+            text.Contains("verify", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("phone", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("identity", StringComparison.OrdinalIgnoreCase),
+            $"Expected auth prompt. Got: {text}");
     }
 
     [Fact]
@@ -76,16 +76,16 @@ public class OrchestratorTests : IAsyncLifetime
         var sessionId = Guid.NewGuid().ToString();
 
         // Step 1: Ask for account data (triggers auth)
-        var r1 = await StreamingTestHelper.CollectAsync(
+        var (r1, _) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "What is my balance?"));
         Assert.Contains("verify", r1, StringComparison.OrdinalIgnoreCase);
 
         // Step 2: Provide phone number
-        var r2 = await StreamingTestHelper.CollectAsync(
+        var (r2, _) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "555-1234"));
 
         // Step 3: Provide SSN
-        var r3 = await StreamingTestHelper.CollectAsync(
+        var (r3, _) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "1234"));
 
         // After successful auth, should answer the pending query
@@ -101,14 +101,14 @@ public class OrchestratorTests : IAsyncLifetime
     {
         var sessionId = Guid.NewGuid().ToString();
 
-        var response = await StreamingTestHelper.CollectAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "What's the weather like today?"));
 
         Assert.True(
-            response.Contains("utility", StringComparison.OrdinalIgnoreCase) ||
-            response.Contains("bill", StringComparison.OrdinalIgnoreCase) ||
-            response.Contains("account", StringComparison.OrdinalIgnoreCase),
-            $"Expected out-of-scope response. Got: {response}");
+            text.Contains("utility", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("bill", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("account", StringComparison.OrdinalIgnoreCase),
+            $"Expected out-of-scope response. Got: {text}");
     }
 
     [Fact]
@@ -116,7 +116,7 @@ public class OrchestratorTests : IAsyncLifetime
     {
         var sessionId = Guid.NewGuid().ToString();
 
-        var r1 = await StreamingTestHelper.CollectAsync(
+        var (r1, _) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "I want to speak to a representative"));
 
         Assert.True(
@@ -126,7 +126,7 @@ public class OrchestratorTests : IAsyncLifetime
             $"Expected handoff acknowledgment. Got: {r1}");
 
         // User can continue chatting after handoff
-        var r2 = await StreamingTestHelper.CollectAsync(
+        var (r2, _) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "What are my payment options?"));
 
         Assert.True(
@@ -140,10 +140,10 @@ public class OrchestratorTests : IAsyncLifetime
     {
         var sessionId = Guid.NewGuid().ToString();
 
-        var response = await StreamingTestHelper.CollectAsync(
+        var (text, events) = await StreamingTestHelper.CollectAsync(
             _orchestrator.ProcessMessageStreamingAsync(sessionId, "What is my current balance?"));
 
-        // During auth flow, should not include "You might also want to ask" suggestions
-        Assert.DoesNotContain("You might also want to ask", response);
+        // During auth flow, should not include suggestions events
+        Assert.DoesNotContain(events, e => e is SuggestionsEvent);
     }
 }
