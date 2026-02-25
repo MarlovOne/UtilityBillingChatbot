@@ -93,15 +93,7 @@ public class AuthAgent : IStreamingAgent
         var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
         {
             Name = "AuthAgent",
-            AIContextProviderFactory = (ctx, ct) =>
-            {
-                if (ctx.SerializedState.ValueKind == JsonValueKind.Object)
-                {
-                    return new ValueTask<AIContextProvider>(
-                        new AuthenticationContextProvider(_cisDatabase, ctx.SerializedState, _providerLogger));
-                }
-                return new ValueTask<AIContextProvider>(provider);
-            }
+            AIContextProviders = [provider]
         });
 
         var agentSession = await agent.CreateSessionAsync(cancellationToken);

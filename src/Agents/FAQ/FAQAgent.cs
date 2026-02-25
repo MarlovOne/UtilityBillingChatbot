@@ -86,8 +86,7 @@ public class FAQAgent : IStreamingAgent
         return _chatClient.AsAIAgent(new ChatClientAgentOptions
         {
             Name = "FAQAgent",
-            AIContextProviderFactory = (ctx, cancellation) =>
-                new ValueTask<AIContextProvider>(provider)
+            AIContextProviders = [provider]
         });
     }
 }
@@ -107,7 +106,7 @@ public sealed class FAQContextProvider : AIContextProvider
         _knowledgeBase = knowledgeBase;
     }
 
-    public override ValueTask<AIContext> InvokingAsync(InvokingContext context, CancellationToken ct)
+    protected override ValueTask<AIContext> ProvideAIContextAsync(InvokingContext context, CancellationToken ct)
     {
         var instructions = $"""
             You are a utility billing customer support assistant. Answer questions

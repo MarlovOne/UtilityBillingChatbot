@@ -180,8 +180,7 @@ public class UtilityDataAgent
         var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
         {
             Name = "UtilityDataAgent",
-            AIContextProviderFactory = (ctx, ct) =>
-                new ValueTask<AIContextProvider>(provider)
+            AIContextProviders = [provider]
         });
 
         var agentSession = await agent.CreateSessionAsync(cancellationToken);

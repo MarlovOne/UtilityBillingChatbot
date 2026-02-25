@@ -17,7 +17,7 @@ namespace UtilityBillingChatbot.Orchestration;
 /// Main orchestrator that routes user messages through classification
 /// and dispatches to appropriate streaming agents.
 /// </summary>
-public class ChatbotOrchestrator
+public class ChatbotOrchestrator : IChatbotOrchestrator
 {
     private readonly ClassifierAgent _classifierAgent;
     private readonly FAQAgent _faqAgent;

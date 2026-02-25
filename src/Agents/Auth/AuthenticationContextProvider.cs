@@ -89,7 +89,7 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     /// <summary>
     /// Called before each agent invocation. Injects current state and available tools.
     /// </summary>
-    public override ValueTask<AIContext> InvokingAsync(InvokingContext context, CancellationToken ct)
+    protected override ValueTask<AIContext> ProvideAIContextAsync(InvokingContext context, CancellationToken ct)
     {
         var stateMessage = BuildStateMessage();
         var tools = GetToolsForCurrentState();
@@ -317,7 +317,9 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     /// <summary>
     /// Serialize state for session persistence.
     /// </summary>
-    public override JsonElement Serialize(JsonSerializerOptions? options = null)
+    // Note: Serialize was removed from AIContextProvider in rc1.
+    // State is now managed via the constructor + JsonElement pattern.
+    public JsonElement SerializeState(JsonSerializerOptions? options = null)
     {
         return JsonSerializer.SerializeToElement(new
         {

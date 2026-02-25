@@ -12,14 +12,14 @@ namespace UtilityBillingChatbot.Infrastructure;
 /// </summary>
 public class ChatbotService : BackgroundService
 {
-    private readonly ChatbotOrchestrator _orchestrator;
+    private readonly IChatbotOrchestrator _orchestrator;
     private readonly IConfiguration _configuration;
     private readonly ILogger<ChatbotService> _logger;
 
     private readonly string _sessionId = Guid.NewGuid().ToString();
 
     public ChatbotService(
-        ChatbotOrchestrator orchestrator,
+        IChatbotOrchestrator orchestrator,
         IConfiguration configuration,
         ILogger<ChatbotService> logger)
     {

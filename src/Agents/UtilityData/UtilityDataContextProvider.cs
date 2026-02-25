@@ -41,7 +41,7 @@ public sealed class UtilityDataContextProvider : AIContextProvider
     /// <summary>
     /// Called before each agent invocation. Provides instructions and tools.
     /// </summary>
-    public override ValueTask<AIContext> InvokingAsync(InvokingContext context, CancellationToken ct)
+    protected override ValueTask<AIContext> ProvideAIContextAsync(InvokingContext context, CancellationToken ct)
     {
         var instructions = BuildInstructions();
         var tools = BuildTools();

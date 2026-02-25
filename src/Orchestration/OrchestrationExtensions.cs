@@ -16,6 +16,8 @@ public static class OrchestrationExtensions
     {
         services.AddSingleton<ISessionStore, InMemorySessionStore>();
         services.AddSingleton<ChatbotOrchestrator>();
+        services.AddSingleton<HelloWorldOrchestrator>();
+        services.AddSingleton<IChatbotOrchestrator>(sp => sp.GetRequiredService<HelloWorldOrchestrator>());
         return services;
     }
 }

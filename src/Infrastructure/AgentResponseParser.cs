@@ -23,7 +23,7 @@ public static class AgentResponseParser
     /// <param name="error">Error message if parsing failed.</param>
     /// <returns>True if parsing succeeded, false otherwise.</returns>
     public static bool TryGetResult<T>(
-        ChatClientAgentResponse<T> response,
+        AgentResponse<T> response,
         [NotNullWhen(true)] out T? result,
         out string? error)
     {
