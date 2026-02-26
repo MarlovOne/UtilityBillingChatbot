@@ -13,7 +13,7 @@ namespace UtilityBillingChatbot.Agents.UtilityData;
 
 /// <summary>
 /// Agent that answers account-specific billing questions for authenticated customers.
-/// Requires a completed AuthSession from AuthAgent.
+/// Requires an authenticated customer ID.
 /// Handles payment approval internally during streaming.
 /// </summary>
 public class UtilityDataAgent
@@ -43,19 +43,9 @@ public class UtilityDataAgent
     /// </summary>
     public async IAsyncEnumerable<ChatEvent> StreamAsync(
         string input,
-        UtilityDataSession? session = null,
-        AuthSession? authSession = null,
+        UtilityDataSession session,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (session is null)
-        {
-            if (authSession is null)
-            {
-                throw new InvalidOperationException(
-                    "Either an existing UtilityDataSession or an authenticated AuthSession is required.");
-            }
-            session = await CreateSessionAsync(authSession, ct);
-        }
 
         _logger.LogDebug("UtilityData query for {Customer}: {Input}",
             session.Provider.CustomerName, input);
@@ -154,22 +144,12 @@ public class UtilityDataAgent
 #pragma warning restore MEAI001
 
     /// <summary>
-    /// Creates a new UtilityDataSession from an authenticated AuthSession.
+    /// Creates a new UtilityDataSession from a customer ID.
     /// </summary>
     public async Task<UtilityDataSession> CreateSessionAsync(
-        AuthSession authSession,
+        string customerId,
         CancellationToken cancellationToken = default)
     {
-        if (!authSession.Provider.IsAuthenticated)
-        {
-            throw new InvalidOperationException(
-                "Cannot create UtilityDataSession: AuthSession is not authenticated. " +
-                $"Current state: {authSession.Provider.AuthState}");
-        }
-
-        var customerId = authSession.Provider.CustomerId
-            ?? throw new InvalidOperationException("Authenticated session has no CustomerId");
-
         var customer = _cisDatabase.FindByIdentifier(customerId)
             ?? throw new InvalidOperationException($"Customer {customerId} not found in CIS database");
 

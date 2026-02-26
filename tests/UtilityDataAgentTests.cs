@@ -45,52 +45,22 @@ public class UtilityDataAgentTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task DataAgent_ThrowsException_WhenNoAuthSession()
+    public async Task DataAgent_ThrowsException_WhenCustomerNotFound()
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-        {
-            await foreach (var _ in _utilityDataAgent.StreamAsync("What is my balance?"))
-            {
-            }
-        });
-    }
-
-    [Fact]
-    public async Task DataAgent_ThrowsException_WhenNotAuthenticated()
-    {
-        // Get a session that's in Verifying state (not yet authenticated)
-        var authSession = await _authAgent.CreateSessionAsync();
-
-        await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("I need help", authSession));
-        await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", authSession));
-
-        Assert.Equal(AuthenticationState.Verifying, authSession.Provider.AuthState);
-
         await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _utilityDataAgent.CreateSessionAsync(authSession));
+            () => _utilityDataAgent.CreateSessionAsync("nonexistent-id"));
     }
 
     [Fact]
     public async Task DataAgent_FetchesBalance_WhenAuthenticated()
     {
-        // Authenticate John Smith
-        var authSession = await _authAgent.CreateSessionAsync();
-
-        await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("I need help with my account", authSession));
-        await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", authSession));
-        var (_, events3) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("1234", authSession));
-        var m3 = events3.OfType<AuthStateEvent>().Single();
-        Assert.Equal(AuthenticationState.Authenticated, m3.State);
+        // Authenticate John Smith via the auth agent
+        var customerId = await AuthenticateJohnSmithAsync();
 
         // Query balance
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _utilityDataAgent.StreamAsync("What is my current balance?",
-                authSession: authSession));
+        var session = await _utilityDataAgent.CreateSessionAsync(customerId);
+        var (text, _) = await StreamingTestHelper.CollectAsync(
+            _utilityDataAgent.StreamAsync("What is my current balance?", session));
 
         Assert.Contains("187", text);
     }
@@ -99,21 +69,12 @@ public class UtilityDataAgentTests : IAsyncLifetime
     public async Task DataAgent_AnalyzesUsage_WithComparison()
     {
         // Authenticate John Smith (has significant usage increase)
-        var authSession = await _authAgent.CreateSessionAsync();
-
-        await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("Check my bill", authSession));
-        await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", authSession));
-        var (_, events3) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("1234", authSession));
-        var m3 = events3.OfType<AuthStateEvent>().Single();
-        Assert.Equal(AuthenticationState.Authenticated, m3.State);
+        var customerId = await AuthenticateJohnSmithAsync();
 
         // Ask about high bill
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _utilityDataAgent.StreamAsync("Why is my bill so high?",
-                authSession: authSession));
+        var session = await _utilityDataAgent.CreateSessionAsync(customerId);
+        var (text, _) = await StreamingTestHelper.CollectAsync(
+            _utilityDataAgent.StreamAsync("Why is my bill so high?", session));
 
         // Should mention usage or increase
         Assert.True(
@@ -121,5 +82,26 @@ public class UtilityDataAgentTests : IAsyncLifetime
             text.Contains("increase", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("higher", StringComparison.OrdinalIgnoreCase),
             $"Expected response about usage. Got: {text}");
+    }
+
+    /// <summary>
+    /// Runs the full auth flow for John Smith and returns the authenticated customer ID.
+    /// </summary>
+    private async Task<string> AuthenticateJohnSmithAsync()
+    {
+        var (_, events1) = await StreamingTestHelper.CollectAsync(
+            _authAgent.StreamAsync("I need help with my account", state: null));
+        var state = events1.OfType<AuthStateEvent>().Single().FlowState;
+
+        var (_, events2) = await StreamingTestHelper.CollectAsync(
+            _authAgent.StreamAsync("555-1234", state));
+        state = events2.OfType<AuthStateEvent>().Single().FlowState;
+
+        var (_, events3) = await StreamingTestHelper.CollectAsync(
+            _authAgent.StreamAsync("1234", state));
+        var authEvent = events3.OfType<AuthStateEvent>().Single();
+        Assert.Equal(AuthenticationState.Authenticated, authEvent.State);
+
+        return authEvent.CustomerId!;
     }
 }

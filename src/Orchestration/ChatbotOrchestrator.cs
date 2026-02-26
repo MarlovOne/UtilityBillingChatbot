@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft. All rights reserved.
 
-using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Microsoft.Extensions.Logging;
@@ -28,7 +27,6 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
     private readonly ISessionStore _sessionStore;
     private readonly ILogger<ChatbotOrchestrator> _logger;
 
-    private readonly ConcurrentDictionary<string, ChatSession> _activeSessions = new();
     private static readonly TimeSpan SessionExpiryDuration = TimeSpan.FromMinutes(30);
 
     public ChatbotOrchestrator(
@@ -71,8 +69,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
         var responseText = new StringBuilder();
 
-        var stream = session.AuthSession is not null &&
-                     session.UserContext.AuthState is not AuthenticationState.Authenticated
+        var stream = session.UserContext.AuthState is AuthenticationState.InProgress or AuthenticationState.Verifying
             ? ContinueAuthFlowStreamingAsync(session, userMessage, ct)
             : RouteMessageStreamingAsync(session, userMessage, ct);
 
@@ -186,7 +183,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        if (!session.UserContext.IsAuthenticated || session.AuthSession is null)
+        if (!session.UserContext.IsAuthenticated)
         {
             _logger.LogDebug("Authentication required, initiating auth flow");
             await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
@@ -196,8 +193,27 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
         _logger.LogDebug("User authenticated, routing to UtilityData agent");
 
-        // Resolve utility session (may trigger re-auth if expired)
-        var utilitySession = await ResolveUtilitySessionAsync(session, ct);
+        var customerId = session.UserContext.CustomerId;
+        if (string.IsNullOrEmpty(customerId))
+        {
+            _logger.LogWarning("No customer ID on session, triggering re-auth");
+            session.UserContext.AuthState = AuthenticationState.Expired;
+            await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
+                yield return evt;
+            yield break;
+        }
+
+        UtilityDataSession? utilitySession = null;
+        try
+        {
+            utilitySession = await _utilityDataAgent.CreateSessionAsync(customerId, ct);
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning(ex, "Customer {CustomerId} not found, triggering re-auth", customerId);
+            session.UserContext.AuthState = AuthenticationState.Expired;
+        }
+
         if (utilitySession is null)
         {
             await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
@@ -232,15 +248,14 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
         session.PendingQuery = pendingQuery;
         session.UserContext.AuthState = AuthenticationState.InProgress;
 
-        var authSession = await _authAgent.CreateSessionAsync(ct);
-        session.AuthSession = authSession;
-
         yield return new TextChunk("To access your account information, I'll need to verify your identity first.\n\n");
 
         await foreach (var evt in _authAgent.StreamAsync(
-            "I need to access my account.", authSession, ct))
+            "I need to access my account.", state: null, ct))
         {
             yield return evt;
+            if (evt is AuthStateEvent ase)
+                SaveAuthEvent(session, ase);
         }
 
         session.LastRequiredAction = RequiredAction.AuthenticationInProgress;
@@ -255,11 +270,14 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
         AuthStateEvent? authState = null;
 
-        await foreach (var evt in _authAgent.StreamAsync(userMessage, session.AuthSession!, ct))
+        await foreach (var evt in _authAgent.StreamAsync(userMessage, session.AuthFlowState, ct))
         {
             yield return evt;
             if (evt is AuthStateEvent ase)
+            {
                 authState = ase;
+                SaveAuthEvent(session, ase);
+            }
         }
 
         if (authState is null)
@@ -272,6 +290,8 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
             session.UserContext.CustomerId = authState.CustomerId;
             session.UserContext.CustomerName = authState.CustomerName;
             session.UserContext.SessionExpiry = DateTimeOffset.UtcNow.Add(SessionExpiryDuration);
+
+            session.AuthFlowState = null;
 
             _logger.LogInformation("Authentication successful for {Customer}", authState.CustomerName);
 
@@ -296,6 +316,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
         else if (authState.State == AuthenticationState.LockedOut)
         {
             _logger.LogWarning("Authentication locked out for session {SessionId}", session.SessionId);
+            session.AuthFlowState = null;
             session.PendingQuery = null;
             session.LastRequiredAction = RequiredAction.AuthenticationFailed;
         }
@@ -329,33 +350,6 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
                      "related to your utility bill or account?");
     }
 #pragma warning restore CS1998
-
-    /// <summary>
-    /// Resolves the UtilityDataSession, creating one if needed. Returns null if re-auth is needed.
-    /// </summary>
-    private async Task<UtilityDataSession?> ResolveUtilitySessionAsync(
-        ChatSession session, CancellationToken ct)
-    {
-        try
-        {
-            var utilitySession = session.UtilityDataSession;
-            if (utilitySession is null)
-            {
-                utilitySession = await _utilityDataAgent.CreateSessionAsync(
-                    session.AuthSession!, ct);
-                session.UtilityDataSession = utilitySession;
-            }
-            return utilitySession;
-        }
-        catch (InvalidOperationException ex)
-        {
-            _logger.LogWarning(ex, "UtilityData agent error, may need re-authentication");
-            session.UserContext.AuthState = AuthenticationState.Expired;
-            session.AuthSession = null;
-            session.UtilityDataSession = null;
-            return null;
-        }
-    }
 
     private async Task InitiateHumanHandoffAsync(
         ChatSession session,
@@ -456,12 +450,23 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
         }
     }
 
+    /// <summary>
+    /// Saves the auth flow state from an AuthStateEvent to the ChatSession.
+    /// </summary>
+    private static void SaveAuthEvent(ChatSession session, AuthStateEvent evt)
+    {
+        session.AuthFlowState = evt.FlowState;
+
+        // Sync customer info populated during lookup (Verifying state)
+        if (evt.CustomerId is not null)
+            session.UserContext.CustomerId = evt.CustomerId;
+        if (evt.CustomerName is not null)
+            session.UserContext.CustomerName = evt.CustomerName;
+    }
+
     private async Task<ChatSession> GetOrCreateSessionAsync(
         string sessionId, CancellationToken ct)
     {
-        if (_activeSessions.TryGetValue(sessionId, out var cachedSession))
-            return cachedSession;
-
         var session = await _sessionStore.GetSessionAsync(sessionId, ct);
 
         if (session is null)
@@ -474,13 +479,11 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
             _logger.LogInformation("Created new session {SessionId}", sessionId);
         }
 
-        _activeSessions.TryAdd(sessionId, session);
         return session;
     }
 
     private async Task SaveSessionAsync(ChatSession session, CancellationToken ct)
     {
-        _activeSessions.AddOrUpdate(session.SessionId, session, (_, _) => session);
         await _sessionStore.SaveSessionAsync(session, ct);
     }
 }

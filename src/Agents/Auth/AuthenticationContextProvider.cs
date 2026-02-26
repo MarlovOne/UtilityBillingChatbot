@@ -80,11 +80,14 @@ public sealed class AuthenticationContextProvider : AIContextProvider
             _authenticatedAt = parsed;
     }
 
-    // Public accessors for external code (e.g., routing decisions)
+    // Public accessors for external code (e.g., routing decisions, state extraction)
     public AuthenticationState AuthState => _authState;
     public string? CustomerId => _customerId;
     public string? CustomerName => _customerName;
     public bool IsAuthenticated => _authState == AuthenticationState.Authenticated;
+    public int FailedAttempts => _failedAttempts;
+    public IReadOnlyList<string> VerifiedFactors => _verifiedFactors;
+    public string? IdentifyingInfo => _identifyingInfo;
 
     /// <summary>
     /// Called before each agent invocation. Injects current state and available tools.
@@ -94,6 +97,11 @@ public sealed class AuthenticationContextProvider : AIContextProvider
         var stateMessage = BuildStateMessage();
         var tools = GetToolsForCurrentState();
         var instructions = BuildInstructions();
+
+        _logger.LogInformation("AuthContextProvider injecting context:\n  Instructions: {Instructions}\n  StateMessage: {StateMessage}\n  Tools: [{Tools}]",
+            instructions.Replace("\n", " ").Trim(),
+            stateMessage.Replace("\n", " ").Trim(),
+            string.Join(", ", tools.Select(t => t is AIFunction f ? f.Name : t.GetType().Name)));
 
         return new ValueTask<AIContext>(new AIContext
         {
@@ -105,13 +113,35 @@ public sealed class AuthenticationContextProvider : AIContextProvider
 
     private string BuildStateMessage()
     {
-        return $"""
-            Current authentication state:
-            - Status: {_authState}
-            - Failed attempts: {_failedAttempts}/{MaxAttempts}
-            - Verified factors: {(_verifiedFactors.Count > 0 ? string.Join(", ", _verifiedFactors) : "none")}
-            {(_customerId != null ? $"- Customer: {_customerName} ({_customerId})" : "")}
-            """;
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Current authentication state:");
+        sb.AppendLine($"- Status: {_authState}");
+        sb.AppendLine($"- Failed attempts: {_failedAttempts}/{MaxAttempts}");
+        sb.AppendLine($"- Verified factors: {(_verifiedFactors.Count > 0 ? string.Join(", ", _verifiedFactors) : "none")}");
+
+        if (_customerId != null)
+            sb.AppendLine($"- Customer: {_customerName} ({_customerId})");
+
+        // Give the LLM actionable context since there's no conversation history
+        sb.AppendLine();
+        sb.AppendLine(_authState switch
+        {
+            AuthenticationState.Anonymous =>
+                "NEXT STEP: Ask the customer for their phone number, email, or account number. Then use LookupCustomerByIdentifier to find them.",
+            AuthenticationState.Verifying when _verifiedFactors.Count == 0 =>
+                "NEXT STEP: The customer was already found. You previously asked them for their last 4 SSN digits or date of birth. " +
+                "The user's message is their answer. Use VerifyLastFourSSN or VerifyDateOfBirth to check it. " +
+                "If verification succeeds, call CompleteAuthentication immediately.",
+            AuthenticationState.Verifying =>
+                "NEXT STEP: Verification factor(s) already confirmed. Call CompleteAuthentication now to finish.",
+            AuthenticationState.Authenticated =>
+                "The customer is verified. Let them know they're authenticated.",
+            AuthenticationState.LockedOut =>
+                "The account is locked. Inform the customer they need to contact customer service.",
+            _ => ""
+        });
+
+        return sb.ToString();
     }
 
     private static string BuildInstructions()
@@ -169,6 +199,7 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     [Description("Look up a customer by phone number, email, or account number")]
     private LookupResult LookupCustomerByIdentifier(string identifier)
     {
+        _logger.LogInformation("TOOL CALL: LookupCustomerByIdentifier({Identifier})", identifier);
         var customer = _cisDatabase.FindByIdentifier(identifier);
 
         if (customer == null)
@@ -187,6 +218,9 @@ public sealed class AuthenticationContextProvider : AIContextProvider
         _customerName = customer.Name;
         _authState = AuthenticationState.Verifying;
 
+        _logger.LogInformation("TOOL RESULT: LookupCustomerByIdentifier → Found={Name}, State={State}",
+            customer.Name, _authState);
+
         return new LookupResult
         {
             Found = true,
@@ -199,6 +233,7 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     [Description("Verify the last 4 digits of customer's SSN")]
     private AuthVerificationResult VerifyLastFourSSN(string answer)
     {
+        _logger.LogInformation("TOOL CALL: VerifyLastFourSSN({Answer})", answer);
         var customer = _cisDatabase.FindByIdentifier(_identifyingInfo!);
         if (customer == null)
         {
@@ -212,12 +247,16 @@ public sealed class AuthenticationContextProvider : AIContextProvider
         }
 
         var cleaned = new string(answer.Where(char.IsDigit).ToArray());
-        return VerifyAnswer(cleaned == customer.LastFourSSN, "SSN");
+        var result = VerifyAnswer(cleaned == customer.LastFourSSN, "SSN");
+        _logger.LogInformation("TOOL RESULT: VerifyLastFourSSN → Verified={Verified}, NextAction={NextAction}, State={State}",
+            result.Verified, result.NextAction, _authState);
+        return result;
     }
 
     [Description("Verify customer's date of birth (format: MM/DD/YYYY)")]
     private AuthVerificationResult VerifyDateOfBirth(string answer)
     {
+        _logger.LogInformation("TOOL CALL: VerifyDateOfBirth({Answer})", answer);
         var customer = _cisDatabase.FindByIdentifier(_identifyingInfo!);
         if (customer == null)
         {
@@ -231,7 +270,10 @@ public sealed class AuthenticationContextProvider : AIContextProvider
         }
 
         var isCorrect = DateOnly.TryParse(answer, out var dob) && dob == customer.DateOfBirth;
-        return VerifyAnswer(isCorrect, "DOB");
+        var result = VerifyAnswer(isCorrect, "DOB");
+        _logger.LogInformation("TOOL RESULT: VerifyDateOfBirth → Verified={Verified}, NextAction={NextAction}, State={State}",
+            result.Verified, result.NextAction, _authState);
+        return result;
     }
 
     private AuthVerificationResult VerifyAnswer(bool isCorrect, string factorName)
@@ -289,6 +331,7 @@ public sealed class AuthenticationContextProvider : AIContextProvider
     [Description("Mark customer as authenticated after successful verification")]
     private AuthVerificationResult CompleteAuthentication()
     {
+        _logger.LogInformation("TOOL CALL: CompleteAuthentication()");
         if (_verifiedFactors.Count == 0)
         {
             return new AuthVerificationResult
@@ -302,6 +345,8 @@ public sealed class AuthenticationContextProvider : AIContextProvider
 
         _authState = AuthenticationState.Authenticated;
         _authenticatedAt = DateTimeOffset.UtcNow;
+
+        _logger.LogInformation("TOOL RESULT: CompleteAuthentication → State={State}", _authState);
 
         return new AuthVerificationResult
         {

@@ -18,7 +18,11 @@ public record TextChunk(string Text) : ChatEvent;
 public record ClassificationEvent(QuestionCategory? Category, double Confidence) : ChatEvent;
 
 /// <summary>Authentication state change from the AuthAgent.</summary>
-public record AuthStateEvent(AuthenticationState State, string? CustomerId, string? CustomerName) : ChatEvent;
+public record AuthStateEvent(
+    AuthenticationState State,
+    string? CustomerId,
+    string? CustomerName,
+    AuthFlowState? FlowState) : ChatEvent;
 
 /// <summary>Answer confidence from FAQ or UtilityData agents.</summary>
 public record AnswerConfidenceEvent(bool FoundAnswer) : ChatEvent;

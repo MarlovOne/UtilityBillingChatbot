@@ -2,9 +2,20 @@
 
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
-using UtilityBillingChatbot.Agents.UtilityData;
 
 namespace UtilityBillingChatbot.Orchestration;
+
+/// <summary>
+/// Captures the full state of an in-progress auth flow for persistence/reconstruction.
+/// Null when no auth flow is active.
+/// </summary>
+public record AuthFlowState(
+    AuthenticationState ProviderState,
+    int FailedAttempts,
+    List<string> VerifiedFactors,
+    string? IdentifyingInfo,
+    string? CustomerId,
+    string? CustomerName);
 
 /// <summary>
 /// Represents a complete chat session including user context, conversation history,
@@ -21,11 +32,8 @@ public class ChatSession
     /// <summary>History of messages in this conversation.</summary>
     public List<ConversationMessage> ConversationHistory { get; set; } = [];
 
-    /// <summary>Active authentication session, if auth flow is in progress.</summary>
-    public AuthSession? AuthSession { get; set; }
-
-    /// <summary>Active utility data session for account queries.</summary>
-    public UtilityDataSession? UtilityDataSession { get; set; }
+    /// <summary>State of an in-progress authentication flow. Null when no auth is active.</summary>
+    public AuthFlowState? AuthFlowState { get; set; }
 
     /// <summary>
     /// Query that was pending before authentication started.

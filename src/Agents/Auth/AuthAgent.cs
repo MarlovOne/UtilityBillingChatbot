@@ -34,39 +34,40 @@ public class AuthAgent : IStreamingAgent
         _providerLogger = providerLogger;
     }
 
-    public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input, [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        _logger.LogDebug("Auth input (streaming, new session): {Input}", input);
-        var session = await CreateSessionAsync(ct);
-
-        await foreach (var evt in StreamWithSessionAsync(input, session, ct))
-        {
-            yield return evt;
-        }
-    }
-
     /// <summary>
-    /// Streams the auth flow with an existing session for multi-turn authentication.
+    /// Streams the auth flow. Creates a fresh session per turn from the provided state.
+    /// If <paramref name="state"/> is null, starts a new auth flow.
     /// </summary>
     public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input, AuthSession session, [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        _logger.LogDebug("Auth input (streaming, existing session): {Input}", input);
-
-        await foreach (var evt in StreamWithSessionAsync(input, session, ct))
-        {
-            yield return evt;
-        }
-    }
-
-    private async IAsyncEnumerable<ChatEvent> StreamWithSessionAsync(
         string input,
-        AuthSession session,
-        [EnumeratorCancellation] CancellationToken ct)
+        AuthFlowState? state,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        await foreach (var update in session.Agent.RunStreamingAsync(
-            input, session.AgentSession, cancellationToken: ct))
+        _logger.LogInformation("Auth input (state={HasState}): {Input}",
+            state is not null, input);
+
+        if (state is not null)
+        {
+            _logger.LogInformation("Reconstructing from AuthFlowState: ProviderState={State}, FailedAttempts={Attempts}, VerifiedFactors=[{Factors}], Customer={Customer} ({Id}), IdentifyingInfo={Info}",
+                state.ProviderState, state.FailedAttempts,
+                string.Join(", ", state.VerifiedFactors),
+                state.CustomerName, state.CustomerId, state.IdentifyingInfo);
+        }
+
+        var provider = state is not null
+            ? CreateProviderFromState(state)
+            : new AuthenticationContextProvider(_cisDatabase, _providerLogger);
+
+        var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
+        {
+            Name = "AuthAgent",
+            AIContextProviders = [provider]
+        });
+
+        var agentSession = await agent.CreateSessionAsync(ct);
+
+        await foreach (var update in agent.RunStreamingAsync(
+            input, agentSession, cancellationToken: ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
@@ -75,40 +76,54 @@ public class AuthAgent : IStreamingAgent
         }
 
         _logger.LogInformation("Auth state: {State}, Customer: {Customer}",
-            session.Provider.AuthState, session.Provider.CustomerName);
+            provider.AuthState, provider.CustomerName);
 
         yield return new AuthStateEvent(
-            session.Provider.AuthState,
-            session.Provider.CustomerId,
-            session.Provider.CustomerName);
+            provider.AuthState,
+            provider.CustomerId,
+            provider.CustomerName,
+            ExtractFlowState(provider));
     }
 
-    /// <summary>
-    /// Creates a new authentication session.
-    /// </summary>
-    public async Task<AuthSession> CreateSessionAsync(CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<ChatEvent> StreamAsync(
+        string input, [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var provider = new AuthenticationContextProvider(_cisDatabase, _providerLogger);
-
-        var agent = _chatClient.AsAIAgent(new ChatClientAgentOptions
+        await foreach (var evt in StreamAsync(input, state: null, ct))
         {
-            Name = "AuthAgent",
-            AIContextProviders = [provider]
+            yield return evt;
+        }
+    }
+
+    private AuthenticationContextProvider CreateProviderFromState(AuthFlowState state)
+    {
+        var stateJson = JsonSerializer.SerializeToElement(new
+        {
+            authState = state.ProviderState.ToString(),
+            failedAttempts = state.FailedAttempts,
+            verifiedFactors = state.VerifiedFactors,
+            identifyingInfo = state.IdentifyingInfo,
+            customerId = state.CustomerId,
+            customerName = state.CustomerName
         });
 
-        var agentSession = await agent.CreateSessionAsync(cancellationToken);
+        return new AuthenticationContextProvider(_cisDatabase, stateJson, _providerLogger);
+    }
 
-        return new AuthSession(agent, agentSession, provider);
+    private static AuthFlowState ExtractFlowState(AuthenticationContextProvider provider)
+    {
+        var providerState = provider.AuthState == AuthenticationState.InProgress
+            ? AuthenticationState.Anonymous
+            : provider.AuthState;
+
+        return new AuthFlowState(
+            ProviderState: providerState,
+            FailedAttempts: provider.FailedAttempts,
+            VerifiedFactors: provider.VerifiedFactors.ToList(),
+            IdentifyingInfo: provider.IdentifyingInfo,
+            CustomerId: provider.CustomerId,
+            CustomerName: provider.CustomerName);
     }
 }
-
-/// <summary>
-/// Holds the agent, session, and provider for an auth flow.
-/// </summary>
-public record AuthSession(
-    ChatClientAgent Agent,
-    AgentSession AgentSession,
-    AuthenticationContextProvider Provider);
 
 /// <summary>
 /// Extension methods for registering the AuthAgent.
