@@ -24,6 +24,10 @@ internal static class ClassifierPrompts
             - For greetings, chitchat, pleasantries, or small talk ("hello", "hi", "how are you",
               "thanks", "good morning"), respond naturally and conversationally WITHOUT calling
               any tools. Keep it friendly and brief.
+            - IMPORTANT: If the message contains BOTH a greeting AND a billing question
+              (e.g. "hello, can you check my billing status?"), treat it as the billing
+              question — call ReportClassification. Only treat as greeting when there is
+              NO billing intent at all.
 
             Categories for ReportClassification:
             - BillingFAQ: General billing questions (no auth needed). Example: "How can I pay my bill?"

@@ -42,16 +42,15 @@ public class UtilityDataAgent
     /// Streams a utility data query for an authenticated customer.
     /// </summary>
     public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input,
+        IReadOnlyList<ChatMessage> messages,
         UtilityDataSession session,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-
-        _logger.LogDebug("UtilityData query for {Customer}: {Input}",
-            session.Provider.CustomerName, input);
+        _logger.LogDebug("UtilityData query for {Customer}: {Count} messages",
+            session.Provider.CustomerName, messages.Count);
 
         // Stream with approval handling
-        await foreach (var evt in StreamWithApprovalAsync(input, session, ct))
+        await foreach (var evt in StreamWithApprovalAsync(messages, session, ct))
         {
             yield return evt;
         }
@@ -64,14 +63,13 @@ public class UtilityDataAgent
 
 #pragma warning disable MEAI001 // FunctionApprovalRequestContent is experimental
     private async IAsyncEnumerable<ChatEvent> StreamWithApprovalAsync(
-        string input,
+        IReadOnlyList<ChatMessage> messages,
         UtilityDataSession session,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        // First streaming pass
         var updates = new List<AgentResponseUpdate>();
         await foreach (var update in session.Agent.RunStreamingAsync(
-            input, session.AgentSession, cancellationToken: ct))
+            messages, session.AgentSession, cancellationToken: ct))
         {
             updates.Add(update);
             if (!string.IsNullOrEmpty(update.Text))

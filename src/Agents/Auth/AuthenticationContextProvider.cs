@@ -113,35 +113,13 @@ public sealed class AuthenticationContextProvider : AIContextProvider
 
     private string BuildStateMessage()
     {
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("Current authentication state:");
-        sb.AppendLine($"- Status: {_authState}");
-        sb.AppendLine($"- Failed attempts: {_failedAttempts}/{MaxAttempts}");
-        sb.AppendLine($"- Verified factors: {(_verifiedFactors.Count > 0 ? string.Join(", ", _verifiedFactors) : "none")}");
-
-        if (_customerId != null)
-            sb.AppendLine($"- Customer: {_customerName} ({_customerId})");
-
-        // Give the LLM actionable context since there's no conversation history
-        sb.AppendLine();
-        sb.AppendLine(_authState switch
-        {
-            AuthenticationState.Anonymous =>
-                "NEXT STEP: Ask the customer for their phone number, email, or account number. Then use LookupCustomerByIdentifier to find them.",
-            AuthenticationState.Verifying when _verifiedFactors.Count == 0 =>
-                "NEXT STEP: The customer was already found. You previously asked them for their last 4 SSN digits or date of birth. " +
-                "The user's message is their answer. Use VerifyLastFourSSN or VerifyDateOfBirth to check it. " +
-                "If verification succeeds, call CompleteAuthentication immediately.",
-            AuthenticationState.Verifying =>
-                "NEXT STEP: Verification factor(s) already confirmed. Call CompleteAuthentication now to finish.",
-            AuthenticationState.Authenticated =>
-                "The customer is verified. Let them know they're authenticated.",
-            AuthenticationState.LockedOut =>
-                "The account is locked. Inform the customer they need to contact customer service.",
-            _ => ""
-        });
-
-        return sb.ToString();
+        return $"""
+            Current authentication state:
+            - Status: {_authState}
+            - Failed attempts: {_failedAttempts}/{MaxAttempts}
+            - Verified factors: {(_verifiedFactors.Count > 0 ? string.Join(", ", _verifiedFactors) : "none")}
+            {(_customerId != null ? $"- Customer: {_customerName} ({_customerId})" : "")}
+            """;
     }
 
     private static string BuildInstructions()

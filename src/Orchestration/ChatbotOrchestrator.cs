@@ -2,6 +2,7 @@
 
 using System.Runtime.CompilerServices;
 using System.Text;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
@@ -69,9 +70,11 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
         var responseText = new StringBuilder();
 
+        var messages = session.BuildAgentMessages();
+
         var stream = session.UserContext.AuthState is AuthenticationState.InProgress or AuthenticationState.Verifying
-            ? ContinueAuthFlowStreamingAsync(session, userMessage, ct)
-            : RouteMessageStreamingAsync(session, userMessage, ct);
+            ? ContinueAuthFlowStreamingAsync(session, messages, ct)
+            : RouteMessageStreamingAsync(session, messages, userMessage, ct);
 
         await foreach (var evt in stream.WithCancellation(ct))
         {
@@ -108,13 +111,14 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
     private async IAsyncEnumerable<ChatEvent> RouteMessageStreamingAsync(
         ChatSession session,
+        IReadOnlyList<ChatMessage> messages,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
         // Stream the classifier
         QuestionCategory? classifiedCategory = null;
 
-        await foreach (var evt in _classifierAgent.StreamAsync(userMessage, ct))
+        await foreach (var evt in _classifierAgent.StreamAsync(messages, ct))
         {
             yield return evt;
             if (evt is ClassificationEvent ce)
@@ -138,8 +142,8 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
         // Resolve the handler stream, then forward it
         var handlerStream = category switch
         {
-            QuestionCategory.BillingFAQ => HandleBillingFAQAsync(session, userMessage, ct),
-            QuestionCategory.AccountData => HandleAccountDataAsync(session, userMessage, ct),
+            QuestionCategory.BillingFAQ => HandleBillingFAQAsync(session, messages, userMessage, ct),
+            QuestionCategory.AccountData => HandleAccountDataAsync(session, messages, userMessage, ct),
             QuestionCategory.ServiceRequest => HandleHandoffAsync(session, userMessage,
                 "Service request requiring human assistance", ct),
             QuestionCategory.HumanRequested => HandleHandoffAsync(session, userMessage,
@@ -155,12 +159,13 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
     private async IAsyncEnumerable<ChatEvent> HandleBillingFAQAsync(
         ChatSession session,
+        IReadOnlyList<ChatMessage> messages,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
         _logger.LogDebug("Routing to FAQ agent");
 
-        await foreach (var evt in _faqAgent.StreamAsync(userMessage, ct))
+        await foreach (var evt in _faqAgent.StreamAsync(messages, ct))
         {
             yield return evt;
             if (evt is AnswerConfidenceEvent { FoundAnswer: false })
@@ -180,13 +185,14 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
     private async IAsyncEnumerable<ChatEvent> HandleAccountDataAsync(
         ChatSession session,
+        IReadOnlyList<ChatMessage> messages,
         string userMessage,
         [EnumeratorCancellation] CancellationToken ct)
     {
         if (!session.UserContext.IsAuthenticated)
         {
             _logger.LogDebug("Authentication required, initiating auth flow");
-            await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
+            await foreach (var evt in InitiateAuthFlowAsync(session, messages, userMessage, ct))
                 yield return evt;
             yield break;
         }
@@ -198,7 +204,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
         {
             _logger.LogWarning("No customer ID on session, triggering re-auth");
             session.UserContext.AuthState = AuthenticationState.Expired;
-            await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
+            await foreach (var evt in InitiateAuthFlowAsync(session, messages, userMessage, ct))
                 yield return evt;
             yield break;
         }
@@ -216,13 +222,13 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
         if (utilitySession is null)
         {
-            await foreach (var evt in InitiateAuthFlowAsync(session, userMessage, ct))
+            await foreach (var evt in InitiateAuthFlowAsync(session, messages, userMessage, ct))
                 yield return evt;
             yield break;
         }
 
         await foreach (var evt in _utilityDataAgent.StreamAsync(
-            userMessage, session: utilitySession, ct: ct))
+            messages, session: utilitySession, ct: ct))
         {
             yield return evt;
             if (evt is AnswerConfidenceEvent { FoundAnswer: false })
@@ -242,6 +248,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
     private async IAsyncEnumerable<ChatEvent> InitiateAuthFlowAsync(
         ChatSession session,
+        IReadOnlyList<ChatMessage> messages,
         string pendingQuery,
         [EnumeratorCancellation] CancellationToken ct)
     {
@@ -250,8 +257,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
         yield return new TextChunk("To access your account information, I'll need to verify your identity first.\n\n");
 
-        await foreach (var evt in _authAgent.StreamAsync(
-            "I need to access my account.", state: null, ct))
+        await foreach (var evt in _authAgent.StreamAsync(messages, session.AuthFlowState, ct))
         {
             yield return evt;
             if (evt is AuthStateEvent ase)
@@ -263,14 +269,14 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
 
     private async IAsyncEnumerable<ChatEvent> ContinueAuthFlowStreamingAsync(
         ChatSession session,
-        string userMessage,
+        IReadOnlyList<ChatMessage> messages,
         [EnumeratorCancellation] CancellationToken ct)
     {
         _logger.LogDebug("Continuing authentication flow");
 
         AuthStateEvent? authState = null;
 
-        await foreach (var evt in _authAgent.StreamAsync(userMessage, session.AuthFlowState, ct))
+        await foreach (var evt in _authAgent.StreamAsync(messages, session.AuthFlowState, ct))
         {
             yield return evt;
             if (evt is AuthStateEvent ase)
@@ -303,7 +309,7 @@ public class ChatbotOrchestrator : IChatbotOrchestrator
                 yield return new TextChunk($"\n\nThank you, {authState.CustomerName}! You're now verified.\n\n");
 
                 // Replay the pending query through account data handler
-                await foreach (var evt in HandleAccountDataAsync(session, pendingQuery, ct))
+                await foreach (var evt in HandleAccountDataAsync(session, messages, pendingQuery, ct))
                     yield return evt;
             }
             else

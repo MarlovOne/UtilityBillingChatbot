@@ -32,43 +32,16 @@ public class FAQAgent : IStreamingAgent
     }
 
     public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input, [EnumeratorCancellation] CancellationToken ct = default)
+        IReadOnlyList<ChatMessage> messages,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        _logger.LogDebug("FAQ question (streaming): {Input}", input);
+        _logger.LogDebug("FAQ question (streaming): {Count} messages", messages.Count);
 
         var provider = new FAQContextProvider(_knowledgeBase);
         var agent = CreateAgent(provider);
-        var session = await agent.CreateSessionAsync(ct);
+        var agentSession = await agent.CreateSessionAsync(ct);
 
-        await foreach (var evt in StreamWithSessionAsync(input, agent, session, provider, ct))
-        {
-            yield return evt;
-        }
-    }
-
-    /// <summary>
-    /// Streams the FAQ answer with an existing session for multi-turn conversations.
-    /// </summary>
-    public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input, AgentSession session, ChatClientAgent agent,
-        FAQContextProvider provider, [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        _logger.LogDebug("FAQ question (streaming, existing session): {Input}", input);
-
-        await foreach (var evt in StreamWithSessionAsync(input, agent, session, provider, ct))
-        {
-            yield return evt;
-        }
-    }
-
-    private async IAsyncEnumerable<ChatEvent> StreamWithSessionAsync(
-        string input,
-        ChatClientAgent agent,
-        AgentSession session,
-        FAQContextProvider provider,
-        [EnumeratorCancellation] CancellationToken ct)
-    {
-        await foreach (var update in agent.RunStreamingAsync(input, session, cancellationToken: ct))
+        await foreach (var update in agent.RunStreamingAsync(messages, agentSession, cancellationToken: ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {

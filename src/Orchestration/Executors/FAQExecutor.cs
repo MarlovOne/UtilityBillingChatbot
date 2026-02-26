@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using Microsoft.Agents.AI.Workflows;
+using Microsoft.Extensions.AI;
 using UtilityBillingChatbot.Agents.FAQ;
 
 namespace UtilityBillingChatbot.Orchestration.Executors;
@@ -25,7 +26,12 @@ public sealed class FAQExecutor : Executor<ClassifierResult, FAQResult>
         var events = new List<ChatEvent>();
         var foundAnswer = true;
 
-        await foreach (var evt in _faqAgent.StreamAsync(message.OriginalMessage, cancellationToken))
+        var messages = new List<ChatMessage>
+        {
+            new(ChatRole.User, message.OriginalMessage)
+        };
+
+        await foreach (var evt in _faqAgent.StreamAsync(messages, cancellationToken))
         {
             events.Add(evt);
             if (evt is AnswerConfidenceEvent ace)

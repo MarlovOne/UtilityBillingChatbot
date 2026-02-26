@@ -2,6 +2,7 @@
 
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -21,9 +22,10 @@ public class ClassifierAgent(
     ILogger<ClassifierAgent> logger) : IStreamingAgent
 {
     public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input, [EnumeratorCancellation] CancellationToken ct = default)
+        IReadOnlyList<ChatMessage> messages,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        logger.LogDebug("Classifying input (streaming): {Length} chars", input.Length);
+        logger.LogDebug("Classifying input (streaming): {Count} messages", messages.Count);
 
         var toolResult = new ClassificationToolResult();
 
@@ -40,7 +42,7 @@ public class ClassifierAgent(
 
         var session = await agent.CreateSessionAsync(ct);
 
-        await foreach (var update in agent.RunStreamingAsync(input, session, cancellationToken: ct))
+        await foreach (var update in agent.RunStreamingAsync(messages, session, cancellationToken: ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {

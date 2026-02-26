@@ -44,8 +44,10 @@ public class FAQAgentTests : IAsyncLifetime
     [Fact]
     public async Task FAQAgent_AnswersPaymentOptions()
     {
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _faqAgent.StreamAsync("How can I pay my bill?"));
+        var session = StreamingTestHelper.CreateTestSession();
+        var (text, events) = await StreamingTestHelper.RunTurnAsync(
+            session, "How can I pay my bill?",
+            msgs => _faqAgent.StreamAsync(msgs));
 
         var confidence = events.OfType<AnswerConfidenceEvent>().Single();
         Assert.True(confidence.FoundAnswer);
@@ -55,8 +57,10 @@ public class FAQAgentTests : IAsyncLifetime
     [Fact]
     public async Task FAQAgent_AnswersAssistancePrograms()
     {
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _faqAgent.StreamAsync("What assistance programs are available to help pay my bill?"));
+        var session = StreamingTestHelper.CreateTestSession();
+        var (text, events) = await StreamingTestHelper.RunTurnAsync(
+            session, "What assistance programs are available to help pay my bill?",
+            msgs => _faqAgent.StreamAsync(msgs));
 
         var confidence = events.OfType<AnswerConfidenceEvent>().Single();
         Assert.True(confidence.FoundAnswer);
@@ -66,8 +70,10 @@ public class FAQAgentTests : IAsyncLifetime
     [Fact]
     public async Task FAQAgent_RedirectsAccountSpecificQuestions()
     {
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _faqAgent.StreamAsync("What's my current balance?"));
+        var session = StreamingTestHelper.CreateTestSession();
+        var (text, events) = await StreamingTestHelper.RunTurnAsync(
+            session, "What's my current balance?",
+            msgs => _faqAgent.StreamAsync(msgs));
 
         Assert.Contains("verify", text, StringComparison.OrdinalIgnoreCase);
     }

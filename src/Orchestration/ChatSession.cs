@@ -1,5 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved.
 
+using Microsoft.Extensions.AI;
 using UtilityBillingChatbot.Agents.Auth;
 using UtilityBillingChatbot.Agents.Classifier;
 
@@ -52,4 +53,17 @@ public class ChatSession
 
     /// <summary>When this session was last updated.</summary>
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Converts conversation history to ChatMessage objects for agent session population.
+    /// The current user message should already be in ConversationHistory before calling this.
+    /// </summary>
+    public List<ChatMessage> BuildAgentMessages()
+    {
+        return ConversationHistory
+            .Select(m => new ChatMessage(
+                m.Role == "user" ? ChatRole.User : ChatRole.Assistant,
+                m.Content))
+            .ToList();
+    }
 }

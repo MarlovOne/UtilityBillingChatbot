@@ -15,7 +15,7 @@ namespace UtilityBillingChatbot.Agents.Auth;
 /// Agent that verifies customer identity through conversational authentication.
 /// Uses security questions (SSN, DOB) to authenticate before account access.
 /// </summary>
-public class AuthAgent : IStreamingAgent
+public class AuthAgent : IStreamingAgent<AuthFlowState?>
 {
     private readonly IChatClient _chatClient;
     private readonly MockCISDatabase _cisDatabase;
@@ -35,16 +35,17 @@ public class AuthAgent : IStreamingAgent
     }
 
     /// <summary>
-    /// Streams the auth flow. Creates a fresh session per turn from the provided state.
-    /// If <paramref name="state"/> is null, starts a new auth flow.
+    /// Streams the auth flow. Creates a fresh agent session per turn,
+    /// populated with conversation history from the ChatSession.
+    /// Reads AuthFlowState from session to reconstruct provider state.
     /// </summary>
     public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input,
+        IReadOnlyList<ChatMessage> messages,
         AuthFlowState? state,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        _logger.LogInformation("Auth input (state={HasState}): {Input}",
-            state is not null, input);
+        _logger.LogInformation("Auth input (state={HasState}): {Count} messages",
+            state is not null, messages.Count);
 
         if (state is not null)
         {
@@ -67,7 +68,7 @@ public class AuthAgent : IStreamingAgent
         var agentSession = await agent.CreateSessionAsync(ct);
 
         await foreach (var update in agent.RunStreamingAsync(
-            input, agentSession, cancellationToken: ct))
+            messages, agentSession, cancellationToken: ct))
         {
             if (!string.IsNullOrEmpty(update.Text))
             {
@@ -83,15 +84,6 @@ public class AuthAgent : IStreamingAgent
             provider.CustomerId,
             provider.CustomerName,
             ExtractFlowState(provider));
-    }
-
-    public async IAsyncEnumerable<ChatEvent> StreamAsync(
-        string input, [EnumeratorCancellation] CancellationToken ct = default)
-    {
-        await foreach (var evt in StreamAsync(input, state: null, ct))
-        {
-            yield return evt;
-        }
     }
 
     private AuthenticationContextProvider CreateProviderFromState(AuthFlowState state)

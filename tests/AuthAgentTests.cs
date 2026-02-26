@@ -44,12 +44,16 @@ public class AuthAgentTests : IAsyncLifetime
     [Fact]
     public async Task AuthAgent_FindsCustomer_ByPhone()
     {
-        var (_, events1) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("I want to check my bill", state: null));
-        var state1 = events1.OfType<AuthStateEvent>().Single().FlowState;
+        var session = StreamingTestHelper.CreateTestSession();
 
-        var (_, events2) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", state1));
+        var (_, events1) = await StreamingTestHelper.RunTurnAsync(
+            session, "I want to check my bill",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events1);
+
+        var (_, events2) = await StreamingTestHelper.RunTurnAsync(
+            session, "555-1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
 
         var meta2 = events2.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Verifying, meta2.State);
@@ -60,16 +64,21 @@ public class AuthAgentTests : IAsyncLifetime
     [Fact]
     public async Task AuthAgent_Authenticates_WithCorrectSSN()
     {
-        var (_, events1) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("I need help with my account", state: null));
-        var state1 = events1.OfType<AuthStateEvent>().Single().FlowState;
+        var session = StreamingTestHelper.CreateTestSession();
 
-        var (_, events2) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", state1));
-        var state2 = events2.OfType<AuthStateEvent>().Single().FlowState;
+        var (_, events1) = await StreamingTestHelper.RunTurnAsync(
+            session, "I need help with my account",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events1);
 
-        var (_, events3) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("1234", state2));
+        var (_, events2) = await StreamingTestHelper.RunTurnAsync(
+            session, "555-1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events2);
+
+        var (_, events3) = await StreamingTestHelper.RunTurnAsync(
+            session, "1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
 
         var m3 = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, m3.State);
@@ -79,24 +88,31 @@ public class AuthAgentTests : IAsyncLifetime
     [Fact]
     public async Task AuthAgent_LocksOut_AfterThreeFailures()
     {
-        var (_, events1) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("Check my bill", state: null));
-        var state = events1.OfType<AuthStateEvent>().Single().FlowState;
+        var session = StreamingTestHelper.CreateTestSession();
 
-        var (_, events2) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", state));
-        state = events2.OfType<AuthStateEvent>().Single().FlowState;
+        var (_, events1) = await StreamingTestHelper.RunTurnAsync(
+            session, "Check my bill",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events1);
 
-        var (_, events3) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("0000", state));
-        state = events3.OfType<AuthStateEvent>().Single().FlowState;
+        var (_, events2) = await StreamingTestHelper.RunTurnAsync(
+            session, "555-1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events2);
 
-        var (_, events4) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("1111", state));
-        state = events4.OfType<AuthStateEvent>().Single().FlowState;
+        var (_, events3) = await StreamingTestHelper.RunTurnAsync(
+            session, "0000",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events3);
 
-        var (_, events5) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("2222", state));
+        var (_, events4) = await StreamingTestHelper.RunTurnAsync(
+            session, "1111",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events4);
+
+        var (_, events5) = await StreamingTestHelper.RunTurnAsync(
+            session, "2222",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
 
         var m5 = events5.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.LockedOut, m5.State);
@@ -105,12 +121,16 @@ public class AuthAgentTests : IAsyncLifetime
     [Fact]
     public async Task AuthAgent_FindsCustomer_ByEmail()
     {
-        var (_, events1) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("Help with my account", state: null));
-        var state = events1.OfType<AuthStateEvent>().Single().FlowState;
+        var session = StreamingTestHelper.CreateTestSession();
 
-        var (_, events2) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("maria.garcia@example.com", state));
+        var (_, events1) = await StreamingTestHelper.RunTurnAsync(
+            session, "Help with my account",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events1);
+
+        var (_, events2) = await StreamingTestHelper.RunTurnAsync(
+            session, "maria.garcia@example.com",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
 
         var m2 = events2.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Verifying, m2.State);
@@ -120,20 +140,41 @@ public class AuthAgentTests : IAsyncLifetime
     [Fact]
     public async Task AuthAgent_FullFlow_PhoneAndSSN()
     {
-        var (_, events1) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("Did you receive my payment?", state: null));
-        var state = events1.OfType<AuthStateEvent>().Single().FlowState;
+        var session = StreamingTestHelper.CreateTestSession();
 
-        var (_, events2) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("My phone number is 555-1234", state));
-        state = events2.OfType<AuthStateEvent>().Single().FlowState;
+        var (_, events1) = await StreamingTestHelper.RunTurnAsync(
+            session, "Did you receive my payment?",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events1);
 
-        var (_, events3) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("The last 4 digits are 1234", state));
+        var (_, events2) = await StreamingTestHelper.RunTurnAsync(
+            session, "My phone number is 555-1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events2);
+
+        var (_, events3) = await StreamingTestHelper.RunTurnAsync(
+            session, "The last 4 digits are 1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
 
         var m3 = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, m3.State);
         Assert.Equal("John Smith", m3.CustomerName);
         Assert.Equal("1234567890", m3.CustomerId);
+    }
+
+    /// <summary>
+    /// Saves the auth flow state from events back to the session,
+    /// mimicking what the orchestrator does between turns.
+    /// </summary>
+    private static void SaveAuthState(ChatSession session, List<ChatEvent> events)
+    {
+        var authEvent = events.OfType<AuthStateEvent>().SingleOrDefault();
+        if (authEvent is null) return;
+
+        session.AuthFlowState = authEvent.FlowState;
+        if (authEvent.CustomerId is not null)
+            session.UserContext.CustomerId = authEvent.CustomerId;
+        if (authEvent.CustomerName is not null)
+            session.UserContext.CustomerName = authEvent.CustomerName;
     }
 }

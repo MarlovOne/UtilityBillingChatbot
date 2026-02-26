@@ -44,8 +44,10 @@ public class ClassifierAgentTests : IAsyncLifetime
     [Fact]
     public async Task Classifier_CategorizesBillingFAQ()
     {
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _classifierAgent.StreamAsync("How can I pay my bill?"));
+        var session = StreamingTestHelper.CreateTestSession();
+        var (text, events) = await StreamingTestHelper.RunTurnAsync(
+            session, "How can I pay my bill?",
+            msgs => _classifierAgent.StreamAsync(msgs));
 
         var classification = events.OfType<ClassificationEvent>().Single();
         Assert.Equal(QuestionCategory.BillingFAQ, classification.Category);
@@ -54,8 +56,10 @@ public class ClassifierAgentTests : IAsyncLifetime
     [Fact]
     public async Task Classifier_CategoriesAccountData()
     {
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _classifierAgent.StreamAsync("What is my current account balance?"));
+        var session = StreamingTestHelper.CreateTestSession();
+        var (text, events) = await StreamingTestHelper.RunTurnAsync(
+            session, "What is my current account balance?",
+            msgs => _classifierAgent.StreamAsync(msgs));
 
         var classification = events.OfType<ClassificationEvent>().Single();
         Assert.Equal(QuestionCategory.AccountData, classification.Category);
@@ -64,8 +68,10 @@ public class ClassifierAgentTests : IAsyncLifetime
     [Fact]
     public async Task Classifier_HandlesOutOfScope()
     {
-        var (text, events) = await StreamingTestHelper.CollectAsync(
-            _classifierAgent.StreamAsync("What's the weather tomorrow?"));
+        var session = StreamingTestHelper.CreateTestSession();
+        var (text, events) = await StreamingTestHelper.RunTurnAsync(
+            session, "What's the weather tomorrow?",
+            msgs => _classifierAgent.StreamAsync(msgs));
 
         var classification = events.OfType<ClassificationEvent>().Single();
         Assert.Equal(QuestionCategory.OutOfScope, classification.Category);

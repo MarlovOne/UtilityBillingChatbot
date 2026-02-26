@@ -54,13 +54,13 @@ public class UtilityDataAgentTests : IAsyncLifetime
     [Fact]
     public async Task DataAgent_FetchesBalance_WhenAuthenticated()
     {
-        // Authenticate John Smith via the auth agent
-        var customerId = await AuthenticateJohnSmithAsync();
+        var session = await AuthenticateJohnSmithAsync();
+        var customerId = session.UserContext.CustomerId!;
 
-        // Query balance
-        var session = await _utilityDataAgent.CreateSessionAsync(customerId);
-        var (text, _) = await StreamingTestHelper.CollectAsync(
-            _utilityDataAgent.StreamAsync("What is my current balance?", session));
+        var utilitySession = await _utilityDataAgent.CreateSessionAsync(customerId);
+        var (text, _) = await StreamingTestHelper.RunTurnAsync(
+            session, "What is my current balance?",
+            msgs => _utilityDataAgent.StreamAsync(msgs, utilitySession));
 
         Assert.Contains("187", text);
     }
@@ -68,15 +68,14 @@ public class UtilityDataAgentTests : IAsyncLifetime
     [Fact]
     public async Task DataAgent_AnalyzesUsage_WithComparison()
     {
-        // Authenticate John Smith (has significant usage increase)
-        var customerId = await AuthenticateJohnSmithAsync();
+        var session = await AuthenticateJohnSmithAsync();
+        var customerId = session.UserContext.CustomerId!;
 
-        // Ask about high bill
-        var session = await _utilityDataAgent.CreateSessionAsync(customerId);
-        var (text, _) = await StreamingTestHelper.CollectAsync(
-            _utilityDataAgent.StreamAsync("Why is my bill so high?", session));
+        var utilitySession = await _utilityDataAgent.CreateSessionAsync(customerId);
+        var (text, _) = await StreamingTestHelper.RunTurnAsync(
+            session, "Why is my bill so high?",
+            msgs => _utilityDataAgent.StreamAsync(msgs, utilitySession));
 
-        // Should mention usage or increase
         Assert.True(
             text.Contains("usage", StringComparison.OrdinalIgnoreCase) ||
             text.Contains("increase", StringComparison.OrdinalIgnoreCase) ||
@@ -85,23 +84,42 @@ public class UtilityDataAgentTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Runs the full auth flow for John Smith and returns the authenticated customer ID.
+    /// Runs the full auth flow for John Smith and returns the ChatSession
+    /// with authenticated state.
     /// </summary>
-    private async Task<string> AuthenticateJohnSmithAsync()
+    private async Task<ChatSession> AuthenticateJohnSmithAsync()
     {
-        var (_, events1) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("I need help with my account", state: null));
-        var state = events1.OfType<AuthStateEvent>().Single().FlowState;
+        var session = StreamingTestHelper.CreateTestSession();
 
-        var (_, events2) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("555-1234", state));
-        state = events2.OfType<AuthStateEvent>().Single().FlowState;
+        var (_, events1) = await StreamingTestHelper.RunTurnAsync(
+            session, "I need help with my account",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events1);
 
-        var (_, events3) = await StreamingTestHelper.CollectAsync(
-            _authAgent.StreamAsync("1234", state));
+        var (_, events2) = await StreamingTestHelper.RunTurnAsync(
+            session, "555-1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
+        SaveAuthState(session, events2);
+
+        var (_, events3) = await StreamingTestHelper.RunTurnAsync(
+            session, "1234",
+            msgs => _authAgent.StreamAsync(msgs, session.AuthFlowState));
         var authEvent = events3.OfType<AuthStateEvent>().Single();
         Assert.Equal(AuthenticationState.Authenticated, authEvent.State);
+        SaveAuthState(session, events3);
 
-        return authEvent.CustomerId!;
+        return session;
+    }
+
+    private static void SaveAuthState(ChatSession session, List<ChatEvent> events)
+    {
+        var authEvent = events.OfType<AuthStateEvent>().SingleOrDefault();
+        if (authEvent is null) return;
+
+        session.AuthFlowState = authEvent.FlowState;
+        if (authEvent.CustomerId is not null)
+            session.UserContext.CustomerId = authEvent.CustomerId;
+        if (authEvent.CustomerName is not null)
+            session.UserContext.CustomerName = authEvent.CustomerName;
     }
 }
