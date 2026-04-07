@@ -6,6 +6,11 @@ public sealed class ConfirmationOptions
 {
     public TimeSpan Ttl { get; init; } = TimeSpan.FromMinutes(5);
 
+    /// <remarks>
+    /// The resolver itself does not consume this value.
+    /// Callers (e.g., a test fixture) are responsible for passing it to the decision agent's
+    /// <c>instructions</c> parameter when constructing the agent.
+    /// </remarks>
     public string ResumeSystemPrompt { get; init; } = """
         You have proposed a sensitive action and are waiting for the user's confirmation.
         Your only job on this turn is to decide whether the user's reply is an

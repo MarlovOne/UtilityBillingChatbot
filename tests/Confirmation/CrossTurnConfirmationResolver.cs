@@ -85,44 +85,48 @@ public sealed class CrossTurnConfirmationResolver
             throw new InvalidOperationException("Same-turn resume is a bug.");
         }
 
-        // TTL: expire without inference cost.
-        if (pending.IsExpired(_options.Ttl, _clock()))
-        {
-            await InjectApprovalResponseAsync(pending, approved: false, ct);
-            Pending = null;
-            return "That request expired. Please ask again if you'd like to proceed.";
-        }
-
-        // L1 + L2: decision sub-agent has no sensitive tools and only emits the schema.
-        var decisionInput = BuildDecisionInput(pending, userMessage);
-        ConfirmationDecision decision;
         try
         {
-            var decisionResponse = await _decisionAgent.RunAsync<ConfirmationDecision>(
-                decisionInput, session: null, serializerOptions: null, options: null, cancellationToken: ct);
-            decision = decisionResponse.Result
-                ?? new ConfirmationDecision(Decision.Deny, "null result");
+            // TTL: expire without inference cost.
+            if (pending.IsExpired(_options.Ttl, _clock()))
+            {
+                await InjectApprovalResponseAsync(pending, approved: false, ct);
+                return "That request expired. Please ask again if you'd like to proceed.";
+            }
+
+            // L1 + L2: decision sub-agent has no sensitive tools and only emits the schema.
+            var decisionInput = BuildDecisionInput(pending, userMessage);
+            ConfirmationDecision decision;
+            try
+            {
+                var decisionResponse = await _decisionAgent.RunAsync<ConfirmationDecision>(
+                    decisionInput, session: null, serializerOptions: null, options: null, cancellationToken: ct);
+                decision = decisionResponse.Result
+                    ?? new ConfirmationDecision(Decision.Deny, "null result");
+            }
+            catch (Exception ex)
+            {
+                // L2 fail-closed: any structured-output failure is treated as Deny.
+                decision = new ConfirmationDecision(Decision.Deny, $"parse failure: {ex.Message}");
+            }
+
+            var approved = decision.Decision == Decision.Approve;
+            var finalText = await InjectApprovalResponseAsync(pending, approved, ct);
+
+            if (!approved)
+            {
+                // Deterministic deny text so the deny path is cheap and predictable.
+                return string.IsNullOrWhiteSpace(finalText)
+                    ? "Cancelled. Let me know if you'd like to try again."
+                    : finalText;
+            }
+
+            return finalText;
         }
-        catch (Exception ex)
+        finally
         {
-            // L2 fail-closed: any structured-output failure is treated as Deny.
-            decision = new ConfirmationDecision(Decision.Deny, $"parse failure: {ex.Message}");
+            Pending = null;
         }
-
-        var approved = decision.Decision == Decision.Approve;
-        var finalText = await InjectApprovalResponseAsync(pending, approved, ct);
-
-        Pending = null;
-
-        if (!approved)
-        {
-            // Deterministic deny text so the deny path is cheap and predictable.
-            return string.IsNullOrWhiteSpace(finalText)
-                ? "Cancelled. Let me know if you'd like to try again."
-                : finalText;
-        }
-
-        return finalText;
     }
 
     private async Task<string> InjectApprovalResponseAsync(
