@@ -74,8 +74,81 @@ public sealed class CrossTurnConfirmationResolver
         return response.ToString();
     }
 
-    private Task<string> ResumeAsync(string userMessage, CancellationToken ct) =>
-        throw new NotImplementedException("Implemented in Task 4.");
+    private async Task<string> ResumeAsync(string userMessage, CancellationToken ct)
+    {
+        var pending = Pending!;
+
+        // Turn-boundary invariant: must be a later turn than the one that proposed.
+        if (pending.ProposedInTurn >= _turnCounter)
+        {
+            Pending = null;
+            throw new InvalidOperationException("Same-turn resume is a bug.");
+        }
+
+        // TTL: expire without inference cost.
+        if (pending.IsExpired(_options.Ttl, _clock()))
+        {
+            await InjectApprovalResponseAsync(pending, approved: false, ct);
+            Pending = null;
+            return "That request expired. Please ask again if you'd like to proceed.";
+        }
+
+        // L1 + L2: decision sub-agent has no sensitive tools and only emits the schema.
+        var decisionInput = BuildDecisionInput(pending, userMessage);
+        ConfirmationDecision decision;
+        try
+        {
+            var decisionResponse = await _decisionAgent.RunAsync<ConfirmationDecision>(
+                decisionInput, session: null, serializerOptions: null, options: null, cancellationToken: ct);
+            decision = decisionResponse.Result
+                ?? new ConfirmationDecision(Decision.Deny, "null result");
+        }
+        catch (Exception ex)
+        {
+            // L2 fail-closed: any structured-output failure is treated as Deny.
+            decision = new ConfirmationDecision(Decision.Deny, $"parse failure: {ex.Message}");
+        }
+
+        var approved = decision.Decision == Decision.Approve;
+        var finalText = await InjectApprovalResponseAsync(pending, approved, ct);
+
+        Pending = null;
+
+        if (!approved)
+        {
+            // Deterministic deny text so the deny path is cheap and predictable.
+            return string.IsNullOrWhiteSpace(finalText)
+                ? "Cancelled. Let me know if you'd like to try again."
+                : finalText;
+        }
+
+        return finalText;
+    }
+
+    private async Task<string> InjectApprovalResponseAsync(
+        PendingConfirmation pending, bool approved, CancellationToken ct)
+    {
+        // L3: framework binds the response to the original FunctionCallId.
+        var approvalResponse = pending.Request.CreateResponse(approved);
+        var message = new ChatMessage(ChatRole.User, [approvalResponse]);
+        var response = await _mainAgent.RunAsync([message], _session, cancellationToken: ct);
+        return response.ToString();
+    }
+
+    private static string BuildDecisionInput(PendingConfirmation pending, string userReply)
+    {
+        var call = pending.Request.FunctionCall;
+        var args = call.Arguments is null
+            ? "(none)"
+            : string.Join(", ", call.Arguments.Select(kv => $"{kv.Key}={kv.Value}"));
+
+        return $"""
+            Proposed action: {call.Name}({args})
+            User reply: "{userReply}"
+
+            Decide Approve or Deny. When in doubt, Deny.
+            """;
+    }
 }
 
 #pragma warning restore MEAI001
